@@ -154,3 +154,26 @@ def apply_translations(
     with database.transaction():
         database.update_fingerprints(updates)
     return report
+
+
+def setup_vietnamese_support(project: Project, *, font_file: str = "DejaVuSans.ttf") -> Path:
+    """Generate vitrans_setup.rpy to configure Unicode font support for the target language."""
+    target_lang = project.config.target_lang
+    content = f"""\
+# vitrans_setup.rpy — Cấu hình tiếng Việt cho Ren'Py
+# Tự động tạo bởi vitrans
+
+translate {target_lang} python:
+    # Thiết lập phông chữ hỗ trợ đầy đủ ký tự tiếng Việt
+    _vi_font = "{font_file}"
+    if renpy.loadable(_vi_font):
+        gui.text_font = _vi_font
+        gui.name_text_font = _vi_font
+        gui.interface_text_font = _vi_font
+        gui.button_text_font = _vi_font
+        gui.choice_button_text_font = _vi_font
+"""
+    dest = project.tl_root / "vitrans_setup.rpy"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    return dest

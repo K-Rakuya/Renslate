@@ -6,11 +6,14 @@ from vitrans.errors import MarkupError
 from vitrans.mask import (
     PlaceholderError,
     TokenKind,
+    auto_repair_placeholders,
     find_markup_error,
     mask,
+    reconcile_translation,
     tokenize,
     unmask,
     validate,
+    validate_raw,
 )
 
 SOURCE = "Hello, [player_name]! {i}Welcome{/i} to the club.{w} 100%% [[ok]"
@@ -95,3 +98,133 @@ def test_unmask_rejects_markup_defects_introduced_by_text() -> None:
     masked = mask("[v]")
     with pytest.raises(MarkupError):
         unmask(masked, "⟦V1⟧ {oops")
+
+
+def test_validate_raw_and_reconcile() -> None:
+    source = "Hello [player], meet {b}[npc]{/b}!"
+    # 1. Natural raw valid
+    valid_raw = "Xin chào [player], hãy gặp {b}[npc]{/b}!"
+    assert not validate_raw(source, valid_raw)
+    target, issues = reconcile_translation(source, valid_raw)
+    assert not issues
+    assert target == valid_raw
+
+    # 2. Natural raw missing variable
+    missing_var = "Xin chào, hãy gặp {b}[npc]{/b}!"
+    issues = validate_raw(source, missing_var)
+    assert any(i.code == "missing_placeholder" and "[player]" in i.detail for i in issues)
+
+    # 3. Natural raw unknown variable
+    unknown_var = "Xin chào [player] và [unknown], gặp {b}[npc]{/b}!"
+    issues = validate_raw(source, unknown_var)
+    assert any(i.code == "unknown_placeholder" and "[unknown]" in i.detail for i in issues)
+
+    # 4. Natural raw tag order inverted
+    bad_order = "Xin chào [player], hãy gặp {/b}[npc]{b}!"
+    issues = validate_raw(source, bad_order)
+    assert any(i.code == "tag_order" for i in issues)
+
+    # 5. Synthetic masked valid
+    masked_target = "Xin chào ⟦V1⟧, hãy gặp ⟦T1⟧⟦V2⟧⟦/T1⟧!"
+    target, issues = reconcile_translation(source, masked_target)
+    assert not issues
+    assert target == "Xin chào [player], hãy gặp {b}[npc]{/b}!"
+
+
+def test_strict_lifo_tag_order() -> None:
+    source = "{b}{i}text{/i}{/b}"
+    # Interleaved / crossed tags violates LIFO
+    interleaved = "{b}{i}text{/b}{/i}"
+    issues = validate_raw(source, interleaved)
+    assert any(i.code == "tag_order" and i.detail == "{/b}" for i in issues)
+
+    # Properly nested LIFO passes
+    proper = "{b}{i}text{/i}{/b}"
+    assert not validate_raw(source, proper)
+
+    # Standalone tag like {w} inside paired tags does not corrupt stack
+    source_w = "{b}text{w}more{/b}"
+    target_w = "{b}dịch{w}thêm{/b}"
+    assert not validate_raw(source_w, target_w)
+
+
+def test_auto_repair_placeholders_whitespace_and_brackets() -> None:
+    source = "Hello, [player]! {b}Welcome{/b}!"
+    masked = mask(source)
+
+    # 1. Model output with whitespace in placeholders
+    broken_whitespace = "Xin chào ⟦ V1 ⟧! ⟦ T1 ⟧Chào mừng⟦ /T1 ⟧!"
+    repaired = auto_repair_placeholders(masked, broken_whitespace)
+    assert repaired == "Xin chào ⟦V1⟧! ⟦T1⟧Chào mừng⟦/T1⟧!"
+    assert unmask(masked, repaired) == "Xin chào [player]! {b}Chào mừng{/b}!"
+
+    # 2. Model output with ASCII brackets [V1] or {T1}
+    bracket_variants = "Xin chào [V1]! {T1}Chào mừng{/T1}!"
+    repaired_brackets = auto_repair_placeholders(masked, bracket_variants)
+    assert repaired_brackets == "Xin chào ⟦V1⟧! ⟦T1⟧Chào mừng⟦/T1⟧!"
+    assert unmask(masked, repaired_brackets) == "Xin chào [player]! {b}Chào mừng{/b}!"
+
+
+def test_auto_repair_placeholders_newline_and_unclosed_tags() -> None:
+    source = "First line\n{i}Second italic line{/i}"
+    masked = mask(source)
+
+    # 1. Model output with literal newline and unclosed tag
+    broken = "Dòng đầu tiên\n⟦T1⟧Dòng in nghiêng thứ hai"
+    repaired = auto_repair_placeholders(masked, broken)
+    assert "⟦L1⟧" in repaired
+    assert repaired.endswith("⟦/T1⟧")
+    restored = unmask(masked, repaired)
+    assert restored == "Dòng đầu tiên\n{i}Dòng in nghiêng thứ hai{/i}"
+
+
+def test_symmetric_style_tags_and_universal_closer_masking() -> None:
+    # 1. Symmetric {i}...{i}
+    source_sym = "{i}It'll burst!{i}"
+    masked_sym = mask(source_sym)
+    assert masked_sym.text == "⟦T1⟧It'll burst!⟦/T1⟧"
+    assert len(masked_sym.tokens) == 1
+    assert masked_sym.tokens[0].close_raw == "{i}"
+    assert unmask(masked_sym, "⟦T1⟧Nó sẽ nổ tung!⟦/T1⟧") == "{i}Nó sẽ nổ tung!{i}"
+
+    # 2. Universal closer {/}
+    source_slash = "{i}It'll burst!{/}"
+    masked_slash = mask(source_slash)
+    assert masked_slash.text == "⟦T1⟧It'll burst!⟦/T1⟧"
+    assert masked_slash.tokens[0].close_raw == "{/}"
+    assert unmask(masked_slash, "⟦T1⟧Nó sẽ nổ tung!⟦/T1⟧") == "{i}Nó sẽ nổ tung!{/}"
+
+    # 3. Mixed symmetric bold and italic
+    source_nested = "{b}Bold{b} and {i}Italic{i}"
+    masked_nested = mask(source_nested)
+    assert masked_nested.text == "⟦T1⟧Bold⟦/T1⟧ and ⟦T2⟧Italic⟦/T2⟧"
+    assert unmask(masked_nested, "⟦T1⟧Đậm⟦/T1⟧ và ⟦T2⟧Nghiêng⟦/T2⟧") == "{b}Đậm{b} và {i}Nghiêng{i}"
+
+
+def test_auto_repair_trailing_and_symmetric_tags() -> None:
+    # 1. Trailing {nw} tag dropped by LLM
+    source_nw = "Hello, world!{nw}"
+    masked_nw = mask(source_nw)
+    repaired_nw = auto_repair_placeholders(masked_nw, "Xin chào thế giới!")
+    assert repaired_nw == "Xin chào thế giới!⟦T1⟧"
+    assert unmask(masked_nw, repaired_nw) == "Xin chào thế giới!{nw}"
+
+    # 2. Dropped closing placeholder on symmetric {i}...{i}
+    source_sym = "{i}It'll burst!{i}"
+    masked_sym = mask(source_sym)
+    repaired_sym = auto_repair_placeholders(masked_sym, "⟦T1⟧Nó sẽ nổ tung!")
+    assert repaired_sym == "⟦T1⟧Nó sẽ nổ tung!⟦/T1⟧"
+    assert unmask(masked_sym, repaired_sym) == "{i}Nó sẽ nổ tung!{i}"
+
+
+def test_validate_raw_accepts_symmetric_and_universal_closers() -> None:
+    # Source {i}...{i} can be translated with canonical {i}...{/i} or original {i}...{i}
+    src = "{i}It'll burst!{i}"
+    assert not validate_raw(src, "{i}Nó sẽ nổ tung!{/i}")
+    assert not validate_raw(src, "{i}Nó sẽ nổ tung!{i}")
+    assert not validate_raw(src, "{i}Nó sẽ nổ tung!{/}")
+
+    # Source {i}...{/} can be translated with canonical {i}...{/i}
+    src_slash = "{i}It'll burst!{/}"
+    assert not validate_raw(src_slash, "{i}Nó sẽ nổ tung!{/i}")
+

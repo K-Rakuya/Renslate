@@ -15,12 +15,27 @@ _TAIL_LINES = 15
 
 
 def find_launcher(sdk: Path) -> Path:
-    """Locate the SDK's command-line launcher for the current platform."""
-    name = "renpy.exe" if os.name == "nt" else "renpy.sh"
-    launcher = sdk / name
-    if not launcher.is_file():
-        raise SdkError(f"không tìm thấy trình khởi chạy Ren'Py: {launcher}")
-    return launcher
+    """Locate the SDK's command-line launcher or game launcher for the current platform."""
+    if sdk.is_file():
+        return sdk
+
+    primary_name = "renpy.exe" if os.name == "nt" else "renpy.sh"
+    launcher = sdk / primary_name
+    if launcher.is_file():
+        return launcher
+
+    if (sdk / "renpy").is_file():
+        return sdk / "renpy"
+
+    # Fallback: check for standalone game distribution launcher
+    pattern = "*.exe" if os.name == "nt" else "*.sh"
+    candidates = [
+        f for f in sdk.glob(pattern) if f.is_file() and not f.name.lower().startswith("uninstall")
+    ]
+    if candidates:
+        return sorted(candidates, key=lambda p: len(p.name))[0]
+
+    raise SdkError(f"không tìm thấy trình khởi chạy Ren'Py hoặc game launcher trong: {sdk}")
 
 
 def build_command(launcher: Path, project_root: Path, language: str) -> list[str]:

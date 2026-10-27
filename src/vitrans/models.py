@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class UnitKind(str, enum.Enum):
@@ -72,3 +72,72 @@ class ApplyTarget:
     slot: Slot
     kind: UnitKind
     target: str
+
+
+@dataclass(frozen=True, slots=True)
+class TMEntry:
+    """Translation memory entry for reuse and suggestions."""
+
+    src_norm: str
+    target: str
+    uses: int = 1
+    origin: Origin = Origin.LLM
+    updated_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class GlossaryEntry:
+    """Fixed glossary term definition."""
+
+    term: str
+    translation: str
+    kind: str = "general"
+    case_sensitive: bool = False
+    aliases: tuple[str, ...] = ()
+    notes: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CharacterProfile:
+    """Character personality, speech style, and addressing rules."""
+
+    tag: str
+    display_name: str
+    gender: str = "unknown"
+    role: str = ""
+    speech_style: str = ""
+    pronoun_map: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SceneSummary:
+    """Summary of a dialogue scene for macro-context."""
+
+    scene_id: str
+    label: str = ""
+    first_seq: int = 0
+    last_seq: int = 0
+    summary: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchLog:
+    """Execution log for an LLM translation batch."""
+
+    batch_id: str
+    unit_uids: tuple[str, ...]
+    tokens_in: int = 0
+    tokens_out: int = 0
+    attempts: int = 1
+    error: str | None = None
+    created_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class QAIssue:
+    """A quality issue detected for a translated unit."""
+
+    uid: str
+    code: str
+    severity: str  # "error", "warning", "info"
+    message: str

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from vitrans.db import Database, utc_timestamp
 from vitrans.errors import MarkupError, ProjectError
 from vitrans.mask import mask
-from vitrans.models import LOCKED_ORIGINS, Origin, Slot, Status, Unit
-from vitrans.parser import Issue, ParsedUnit, Severity, TranslationScanner
+from vitrans.models import LOCKED_ORIGINS, Origin, Slot, Status, Unit, UnitKind
+from vitrans.parser import Issue, ParsedUnit, Severity, TranslationScanner, fingerprint, parse_say
 from vitrans.project import Project
 from vitrans.textio import read_text_file
 
@@ -39,23 +42,117 @@ class ExtractReport:
         return len(self.issues) - self.errors
 
 
-def scan_project(project: Project) -> tuple[TranslationScanner, int]:
+def _scan_raw_script(
+    file: str,
+    lines: Sequence[str],
+    scanner: TranslationScanner,
+    stored_by_ref: dict[str, Unit],
+    seen_by_content: dict[tuple[str | None, str], str],
+) -> None:
+    current_label: str | None = None
+    label_pattern = re.compile(r"^\s*label\s+(?P<label>[A-Za-z_]\w*)\s*:")
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        lbl_match = label_pattern.match(line)
+        if lbl_match:
+            current_label = lbl_match.group("label")
+            continue
+
+        say = parse_say(stripped)
+        if say is not None and say.text:
+            speaker = say.speaker
+            source = say.text
+            ref = f"{file}:{idx}"
+
+            # If previous unit existed at this exact ref with different source, inherit UID
+            if ref in stored_by_ref and stored_by_ref[ref].source != source:
+                uid = stored_by_ref[ref].uid
+            else:
+                key = (speaker, source)
+                if key in seen_by_content:
+                    uid = seen_by_content[key]
+                else:
+                    h = hashlib.sha1(
+                        f"{speaker or ''}\0{source}".encode(), usedforsecurity=False
+                    ).hexdigest()[:16]
+                    uid = f"d:{h}"
+                    seen_by_content[key] = uid
+
+            fp = fingerprint(lines[idx - 1], lines[idx - 1])
+            scanner.units.append(
+                ParsedUnit(
+                    uid=uid,
+                    kind=UnitKind.DIALOGUE,
+                    source=source,
+                    existing=None,
+                    ref=ref,
+                    speaker=speaker,
+                    label=current_label,
+                    file=file,
+                    line=idx,
+                    anchor_line=idx,
+                    fingerprint=fp,
+                )
+            )
+
+
+def scan_project(
+    project: Project, database: Database | None = None
+) -> tuple[TranslationScanner, int]:
     """Parse every ``.rpy`` file below the translation directory; return the scanner and count."""
     root = project.tl_root
-    if not root.is_dir():
-        raise ProjectError(f"không tìm thấy thư mục dịch: {root} (hãy chạy 'vitrans generate')")
-    scanner = TranslationScanner(project.config.target_lang)
-    files = sorted(root.rglob("*.rpy"), key=lambda path: project.relative(path))
-    for path in files:
-        relative = project.relative(path)
-        try:
-            text_file = read_text_file(path)
-        except UnicodeDecodeError as error:
-            message = f"không phải UTF-8 hợp lệ: {error}"
-            scanner.issues.append(Issue(Severity.ERROR, "bad_encoding", relative, 0, message))
-            continue
-        scanner.scan_file(relative, text_file.lines)
-    return scanner, len(files)
+    if root.is_dir():
+        scanner = TranslationScanner(project.config.target_lang)
+        files = sorted(root.rglob("*.rpy"), key=lambda path: project.relative(path))
+        for path in files:
+            relative = project.relative(path)
+            try:
+                text_file = read_text_file(path)
+            except UnicodeDecodeError as error:
+                message = f"không phải UTF-8 hợp lệ: {error}"
+                scanner.issues.append(Issue(Severity.ERROR, "bad_encoding", relative, 0, message))
+                continue
+            scanner.scan_file(relative, text_file.lines)
+        return scanner, len(files)
+
+    # Fallback: scan game/*.rpy scripts directly if tl_root does not exist
+    game_root = project.root / "game"
+    if game_root.is_dir():
+        files = sorted(
+            [p for p in game_root.rglob("*.rpy") if "tl" not in p.parts],
+            key=lambda path: project.relative(path),
+        )
+        if files:
+            stored_by_ref: dict[str, Unit] = {}
+            if database is not None:
+                stored_by_ref = {u.ref: u for u in database.units().values() if u.ref}
+            elif project.db_path.is_file():
+                try:
+                    with project.open_db() as db:
+                        stored_by_ref = {u.ref: u for u in db.units().values() if u.ref}
+                except Exception:
+                    pass
+
+            scanner = TranslationScanner(project.config.target_lang)
+            seen_by_content: dict[tuple[str | None, str], str] = {}
+            for path in files:
+                relative = project.relative(path)
+                try:
+                    text_file = read_text_file(path)
+                except UnicodeDecodeError as error:
+                    message = f"không phải UTF-8 hợp lệ: {error}"
+                    scanner.issues.append(
+                        Issue(Severity.ERROR, "bad_encoding", relative, 0, message)
+                    )
+                    continue
+                _scan_raw_script(relative, text_file.lines, scanner, stored_by_ref, seen_by_content)
+            return scanner, len(files)
+
+    raise ProjectError(f"không tìm thấy thư mục dịch: {root} (hãy chạy 'vitrans generate')")
 
 
 def _build_unit(
@@ -121,7 +218,7 @@ def _build_unit(
 def extract(project: Project, database: Database, *, now: str | None = None) -> ExtractReport:
     """Read the translation files and bring the store up to date, idempotently."""
     now = now or utc_timestamp()
-    scanner, file_count = scan_project(project)
+    scanner, file_count = scan_project(project, database)
     report = ExtractReport(files=file_count, issues=list(scanner.issues))
 
     first: dict[str, ParsedUnit] = {}
@@ -137,6 +234,7 @@ def extract(project: Project, database: Database, *, now: str | None = None) -> 
 
     with database.transaction():
         stored = database.units()
+        units_to_save: list[Unit] = []
         for seq, (uid, parsed) in enumerate(first.items()):
             previous = stored.get(uid)
             unit, source_changed, imported = _build_unit(parsed, existing[uid], seq, previous, now)
@@ -147,7 +245,9 @@ def extract(project: Project, database: Database, *, now: str | None = None) -> 
             if previous is not None and previous.status is Status.OBSOLETE:
                 report.restored += 1
             if unit != previous:
-                database.save_unit(dataclasses.replace(unit, updated_at=now))
+                units_to_save.append(dataclasses.replace(unit, updated_at=now))
+        if units_to_save:
+            database.save_units_bulk(units_to_save)
         database.replace_slots(slots)
         if report.errors == 0:
             report.obsolete = database.mark_orphans_obsolete(now)
@@ -155,3 +255,9 @@ def extract(project: Project, database: Database, *, now: str | None = None) -> 
     report.units = len(first)
     report.slots = len(slots)
     return report
+
+
+def extract_project(project: Project, *, now: str | None = None) -> ExtractReport:
+    """Read the translation files and bring the store up to date for a project."""
+    with project.open_db() as database:
+        return extract(project, database, now=now)

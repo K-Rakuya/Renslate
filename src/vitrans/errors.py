@@ -25,3 +25,15 @@ class ApplyError(VitransError):
 
 class SdkError(VitransError):
     """The Ren'Py SDK is missing or the translate command failed."""
+
+
+class LLMError(VitransError):
+    """Failure communicating with or parsing response from the LLM backend."""
+
+
+class TranslationError(VitransError):
+    """Failure occurred during the translation pipeline."""
+
+
+class QAError(VitransError):
+    """Failure occurred during quality assurance verification."""
