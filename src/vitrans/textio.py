@@ -39,7 +39,8 @@ def write_atomic(path: Path, data: bytes) -> None:
     temporary = path.with_name(f"{path.name}.tmp")
     try:
         temporary.write_bytes(data)
-        shutil.copymode(path, temporary)
+        if path.is_file():
+            shutil.copymode(path, temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)

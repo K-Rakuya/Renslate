@@ -7,7 +7,7 @@ import pytest
 
 from vitrans.db import MIGRATIONS, Database
 from vitrans.errors import ProjectError
-from vitrans.models import Origin, Slot, Status, Unit, UnitKind
+from vitrans.models import Origin, Slot, Status, TMEntry, Unit, UnitKind
 
 
 def make_unit(uid: str = "d:one", **overrides: object) -> Unit:
@@ -149,3 +149,77 @@ def test_meta_values(db: Database) -> None:
     db.set_meta("k", "v1")
     db.set_meta("k", "v2")
     assert db.get_meta("k") == "v2"
+
+
+def test_save_units_bulk(db: Database) -> None:
+    # 1. Empty sequence does not fail
+    db.save_units_bulk([])
+    assert db.units() == {}
+
+    # 2. Insert multiple units
+    u1 = make_unit("u1", seq=0, source="Line 1")
+    u2 = make_unit("u2", seq=1, source="Line 2")
+    db.save_units_bulk([u1, u2])
+    stored = db.units()
+    assert len(stored) == 2
+    assert stored["u1"].source == "Line 1"
+    assert stored["u2"].source == "Line 2"
+
+    # 3. Upsert update on conflict
+    u1_updated = make_unit("u1", seq=0, source="Line 1", target="Dòng 1", status=Status.TRANSLATED)
+    u3 = make_unit("u3", seq=2, source="Line 3")
+    db.save_units_bulk([u1_updated, u3])
+    stored = db.units()
+    assert len(stored) == 3
+    assert stored["u1"].target == "Dòng 1"
+    assert stored["u1"].status == Status.TRANSLATED
+    assert stored["u3"].source == "Line 3"
+
+
+def test_recent_translated_units(db: Database) -> None:
+    units = [
+        make_unit("u0", seq=0, source="S0", target="T0", status=Status.TRANSLATED),
+        make_unit("u1", seq=1, source="S1", status=Status.PENDING),
+        make_unit("u2", seq=2, source="S2", target="T2", status=Status.TRANSLATED),
+        make_unit("u3", seq=3, source="S3", target="T3", status=Status.REVIEWED),
+        make_unit("u4", seq=4, source="S4", target="T4", status=Status.QA_FLAGGED),
+        make_unit("u5", seq=5, source="S5", target="T5", status=Status.FAILED),
+        make_unit("u6", seq=6, source="S6", target="T6", status=Status.TRANSLATED),
+    ]
+    db.save_units_bulk(units)
+
+    # Without before_seq: returns most recent translated units in chronological order
+    recent = db.recent_translated_units(limit=3)
+    assert [u.uid for u in recent] == ["u3", "u4", "u6"]
+
+    # With before_seq=5 (before seq 5, candidates seq 0, 2, 3, 4)
+    recent_before = db.recent_translated_units(limit=2, before_seq=5)
+    assert [u.uid for u in recent_before] == ["u3", "u4"]
+
+    # With before_seq=0 (nothing before 0)
+    assert db.recent_translated_units(limit=5, before_seq=0) == []
+
+
+def test_sanitize_stored_translations(db: Database) -> None:
+    # 1. Units with speaker tags and quotes
+    u1 = make_unit("u1", seq=0, source="Hello", target='[MC] "Xin chào!"', speaker="MC")
+    u2 = make_unit("u2", seq=1, source="Look", target="Nhìn kìa", speaker="Dyna")
+    db.save_units_bulk([u1, u2])
+
+    # 2. TM entry with speaker tags and quotes
+    db.save_tm(TMEntry(src_norm="huh", target='[Dyna] "Hả?"', uses=1))
+    db.save_tm(TMEntry(src_norm="ok", target="Được rồi", uses=1))
+
+    cleaned_units, cleaned_tm = db.sanitize_stored_translations()
+    assert cleaned_units == 1
+    assert cleaned_tm == 1
+
+    # Verify unit sanitized
+    u1_fresh = db.get_unit("u1")
+    assert u1_fresh is not None
+    assert u1_fresh.target == "Xin chào!"
+
+    # Verify TM sanitized
+    tm_fresh = db.get_tm("huh")
+    assert tm_fresh is not None
+    assert tm_fresh.target == "Hả?"

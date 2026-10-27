@@ -57,7 +57,7 @@ def test_successful_run_returns_output(tmp_path: Path) -> None:
         extra_args=["--strings-only"],
     )
     assert output == "done\nnote"
-    assert runner.command[-2:] == ["--no-todo", "--strings-only"]  # type: ignore[attr-defined]
+    assert runner.command[-2:] == ["--no-todo", "--strings-only"]
 
 
 def test_failure_reports_the_tail_of_the_output(tmp_path: Path) -> None:

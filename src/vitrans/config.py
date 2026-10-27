@@ -23,8 +23,8 @@ def _bounded(default: Any, minimum: float | None = None, maximum: float | None =
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     base_url: str = "http://127.0.0.1:8080/v1"
-    model: str = "gemma-4-26b-moe-iq4"
-    n_ctx: int = _bounded(12288, 1024)
+    model: str = "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
+    n_ctx: int = _bounded(6144, 1024)
     temperature: float = _bounded(0.25, 0.0, 2.0)
     timeout_s: float = _bounded(600.0, 1.0)
     max_retries: int = _bounded(3, 0, 20)
@@ -32,8 +32,8 @@ class LLMConfig:
 
 @dataclass(frozen=True, slots=True)
 class BatchConfig:
-    max_lines: int = _bounded(40, 1)
-    max_source_tokens: int = _bounded(1500, 1)
+    max_lines: int = _bounded(25, 1)
+    max_source_tokens: int = _bounded(700, 1)
     lookback: int = _bounded(4, 0)
     workers: int = _bounded(1, 1, 64)
 

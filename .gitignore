@@ -10,3 +10,5 @@ dist/
 .coverage
 htmlcov/
 .vitrans/
+.agents/
+docs/

@@ -30,7 +30,9 @@ from vitrans.literals import decode_say_text, parse_python_string
 from vitrans.models import UnitKind
 
 _WORD = r"(?:[A-Za-z_][\w.]*|@|-[A-Za-z_]\w*)"
-_SAY = re.compile(rf'(?P<prefix>(?:{_WORD}\s+)*)"(?P<body>(?:[^"\\]|\\.)*)"(?P<suffix>.*)')
+_QUOTED_SPEAKER = r'"(?:[^"\\]|\\.)*"'
+_PREFIX = rf"(?:(?:{_WORD}\s+)+|{_QUOTED_SPEAKER}\s+)"
+_SAY = re.compile(rf'(?P<prefix>{_PREFIX}?)"(?P<body>(?:[^"\\]|\\.)*)"(?P<suffix>.*)')
 _UNSUPPORTED_SAY = re.compile(rf"""(?:{_WORD}\s+)*(?:"{{3}}|[rR]?['`]|[rR]")""")
 _HEADER = re.compile(r"translate\s+(?P<language>\w+)\s+(?P<ident>\w+)(?P<rest>.*)")
 _HEADER_TAIL = re.compile(r"\s*:\s*(?:#.*)?")
@@ -125,6 +127,9 @@ class SayStatement:
 
     @property
     def speaker(self) -> str | None:
+        stripped = self.prefix.strip()
+        if stripped.startswith('"') and stripped.endswith('"') and len(stripped) >= 2:
+            return decode_say_text(stripped[1:-1])
         words = self.prefix.split()
         if not words or words[0] == "extend" or words[0][0] in "@-":
             return None

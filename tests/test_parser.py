@@ -152,12 +152,16 @@ def test_bad_header_is_an_error() -> None:
         ('e "Hi" with dissolve', "e ", "Hi", " with dissolve"),
         ('extend " more"', "extend ", " more", ""),
         (r'e "a \"b\" c"', "e ", 'a "b" c', ""),
+        ('"Old Man" "Get off my lawn!"', '"Old Man" ', "Get off my lawn!", ""),
+        ('"Eileen" "Hi!" with dissolve', '"Eileen" ', "Hi!", " with dissolve"),
     ],
 )
 def test_parse_say(code: str, prefix: str, text: str, suffix: str) -> None:
     say = parse_say(code)
     assert say is not None
     assert (say.prefix, say.text, say.suffix) == (prefix, text, suffix)
+    if prefix == '"Old Man" ':
+        assert say.speaker == "Old Man"
 
 
 @pytest.mark.parametrize(
