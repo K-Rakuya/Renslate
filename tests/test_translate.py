@@ -1,4 +1,4 @@
-"""Tests for vitrans.translate."""
+"""Tests for renslate.translate."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from vitrans.config import Config
-from vitrans.errors import LLMError
-from vitrans.models import Origin, Status, TMEntry, Unit, UnitKind
-from vitrans.project import Project
-from vitrans.translate import TranslationPipeline, partition_batches
+from renslate.config import Config
+from renslate.errors import LLMError
+from renslate.models import Origin, Status, TMEntry, Unit, UnitKind
+from renslate.project import Project
+from renslate.translate import TranslationPipeline, partition_batches
 
 
 def test_partition_batches() -> None:
@@ -42,7 +42,7 @@ def test_translation_pipeline_seeds_tm_and_llm(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             return_value=({"d:need_llm": "Xin chào, người bạn!"}, 40, 15),
         ),
     ):
@@ -83,7 +83,7 @@ def test_translation_failure_marks_failed_unit(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             side_effect=LLMError("Server timeout"),
         ),
     ):
@@ -140,7 +140,7 @@ def test_partial_batch_recovery_commits_valid_units(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -176,7 +176,7 @@ def test_cross_chunk_lookback_retention(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             return_value=(
                 {"d:1": "Chào đoạn 1", "d:2": "Thế giới đoạn 1"},
                 30,
@@ -199,7 +199,7 @@ def test_cross_chunk_lookback_retention(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_chunk2),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_chunk2),
     ):
         p2 = TranslationPipeline(project, db, cfg)
         stats2 = p2.run(limit=2)
@@ -225,7 +225,7 @@ def test_bounded_lookback_deque(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             side_effect=lambda sys, usr, **kwargs: (
                 {f"d:{i}": f"Dịch {i}" for i in range(12)},
                 20,
@@ -260,7 +260,7 @@ def test_natural_dialogue_expansion_not_rejected(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             return_value=(
                 {
                     "d:short1": "Có chuyện gì thế hả bạn?",
@@ -312,7 +312,7 @@ def test_batch_schema_cjk_ban_pattern(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         pipeline.run()
@@ -357,7 +357,7 @@ def test_outer_tag_wrapper_auto_healing_in_pipeline(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -391,7 +391,7 @@ def test_prefix_tolerant_uid_resolution(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -403,3 +403,39 @@ def test_prefix_tolerant_uid_resolution(tmp_path: Path) -> None:
         assert u2 is not None and u2.target == "Xin chào!"
 
 
+def test_realign_outer_tags_mismatched_size(tmp_path: Path) -> None:
+    root = tmp_path / "game_root"
+    (root / "game").mkdir(parents=True)
+    project = Project.create(root)
+    cfg = Config()
+
+    src_text = "{size=50}{font=fonts/chinese-rocks.otf}Later, at night.{/font}{/size}"
+    with project.open_db() as db:
+        db.save_unit(Unit("s:ui_1", UnitKind.STRING, 1, src_text, Status.PENDING))
+
+    # Model hallucinated size=60 instead of size=50 in raw tag output
+    def mock_complete_json(
+        system: str,
+        user: str,
+        schema: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], int, int]:
+        return (
+            {"s:ui_1": "{size=60}{font=fonts/chinese-rocks.otf}Sau đó, vào ban đêm.{/font}{/size}"},
+            20,
+            15,
+        )
+
+    with (
+        project.open_db() as db,
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+    ):
+        pipeline = TranslationPipeline(project, db, cfg)
+        stats = pipeline.run()
+
+        assert stats.failed == 0
+        u1 = db.get_unit("s:ui_1")
+        assert u1 is not None
+        assert u1.status == Status.TRANSLATED
+        expected = "{size=50}{font=fonts/chinese-rocks.otf}Sau đó, vào ban đêm.{/font}{/size}"
+        assert u1.target == expected

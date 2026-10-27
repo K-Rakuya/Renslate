@@ -1,4 +1,4 @@
-"""Tests for vitrans.llm."""
+"""Tests for renslate.llm."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vitrans.config import LLMConfig
-from vitrans.errors import LLMError
-from vitrans.llm import LLMClient, extract_json_object
+from renslate.config import LLMConfig
+from renslate.errors import LLMError
+from renslate.llm import LLMClient, extract_json_object
 
 
 def test_extract_json_clean() -> None:
@@ -56,6 +56,53 @@ def test_extract_json_truncated_repair() -> None:
     truncated = '{"d:1": "Dòng 1", "d:2#1": "Dòng 2"'
     res = extract_json_object(truncated)
     assert res == {"d:1": "Dòng 1", "d:2#1": "Dòng 2"}
+
+
+def test_extract_json_doubled_quotes() -> None:
+    raw = (
+        '{\n  ""s:298f7158edeafce173d6"": "Bạn và Liana đi bộ một lúc...",\n'
+        '  ""s:123"": ""Dòng 2""\n}'
+    )
+    res = extract_json_object(raw)
+    assert res == {
+        "s:298f7158edeafce173d6": "Bạn và Liana đi bộ một lúc...",
+        "s:123": "Dòng 2",
+    }
+
+
+def test_extract_json_ignores_renpy_tags() -> None:
+    raw = "{size=60}{font=fonts/chinese-rocks.otf}Sau đó, vào ban đêm.{/font}{/size}"
+    with pytest.raises(LLMError):
+        extract_json_object(raw)
+
+
+def test_llm_client_fallback_single_key() -> None:
+    cfg = LLMConfig(base_url="http://127.0.0.1:8080/v1", model="test-model")
+    client = LLMClient(cfg)
+
+    fake_resp = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "{size=60}{font=fonts/f.otf}Sau đó, vào ban đêm.{/font}{/size}",
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 40, "completion_tokens": 12},
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(fake_resp).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        res, p_tok, c_tok = client.complete_json(
+            "system", "user", fallback_single_key="s:test_key_1"
+        )
+
+    assert res == {"s:test_key_1": "{size=60}{font=fonts/f.otf}Sau đó, vào ban đêm.{/font}{/size}"}
+    assert (p_tok, c_tok) == (40, 12)
 
 
 def test_llm_client_successful_response() -> None:
@@ -178,12 +225,14 @@ def test_llm_client_fallback_on_500_peg_error() -> None:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            err_payload = json.dumps({
-                "error": {
-                    "code": 500,
-                    "message": "The model produced output not matching peg-native format",
+            err_payload = json.dumps(
+                {
+                    "error": {
+                        "code": 500,
+                        "message": "The model produced output not matching peg-native format",
+                    }
                 }
-            }).encode("utf-8")
+            ).encode("utf-8")
             fp = io.BytesIO(err_payload)
             msg = Message()
             msg["Content-Type"] = "application/json"
@@ -199,14 +248,13 @@ def test_llm_client_fallback_on_500_peg_error() -> None:
 
 
 def test_extract_json_with_trailing_comments() -> None:
-    raw = '''{
+    raw = """{
 "d:1": "Xin chào"
 }
 
 // Note on JSON formatting correction:
 {
 "d:1": "Xin chào đã sửa"
-}'''
+}"""
     res = extract_json_object(raw)
     assert "d:1" in res
-

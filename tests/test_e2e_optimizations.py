@@ -1,4 +1,4 @@
-"""Comprehensive 4-Tier Opaque-Box E2E Test Suite for ViTrans Engine Optimizations.
+"""Comprehensive 4-Tier Opaque-Box E2E Test Suite for Renslate Engine Optimizations.
 
 Derived strictly from ADR-010, docs/OPTIMIZATION_PLAN.md, and ORIGINAL_REQUEST.md:
 - Tier 1: Feature Coverage (Hardware launcher defaults, context right-sizing, memory flags,
@@ -28,14 +28,14 @@ from unittest.mock import patch
 
 import pytest
 
-from vitrans.config import BatchConfig, Config, LLMConfig
-from vitrans.context import ContextBuilder, LookbackItem
-from vitrans.db import Database, utc_timestamp
-from vitrans.errors import ConfigError
-from vitrans.extract import extract_project
-from vitrans.glossary import Glossary
-from vitrans.mask import mask, validate_raw
-from vitrans.models import (
+from renslate.config import BatchConfig, Config, LLMConfig
+from renslate.context import ContextBuilder, LookbackItem
+from renslate.db import Database, utc_timestamp
+from renslate.errors import ConfigError
+from renslate.extract import extract_project
+from renslate.glossary import Glossary
+from renslate.mask import mask, validate_raw
+from renslate.models import (
     CharacterProfile,
     GlossaryEntry,
     Origin,
@@ -44,8 +44,8 @@ from vitrans.models import (
     Unit,
     UnitKind,
 )
-from vitrans.project import Project
-from vitrans.translate import TranslationPipeline, partition_batches
+from renslate.project import Project
+from renslate.translate import TranslationPipeline, partition_batches
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_SCRIPT = REPO_ROOT / "scripts" / "run_qwen_server.sh"
@@ -132,19 +132,19 @@ class TestTier1ServerScriptConfig:
 
     def test_default_ctx_size_is_6144(self) -> None:
         content = SERVER_SCRIPT.read_text(encoding="utf-8")
-        match = re.search(r'CTX_SIZE="\$\{RENVI_CTX:-(\d+)\}"', content)
+        match = re.search(r'CTX_SIZE="\$\{RENSLATE_CTX:-(\d+)\}"', content)
         assert match is not None, "CTX_SIZE default parameter expansion missing"
         assert match.group(1) == "6144", f"Expected default ctx 6144, got {match.group(1)}"
 
     def test_default_vram_margin_is_512(self) -> None:
         content = SERVER_SCRIPT.read_text(encoding="utf-8")
-        match = re.search(r'VRAM_MARGIN_MIB="\$\{RENVI_VRAM_MARGIN:-(\d+)\}"', content)
+        match = re.search(r'VRAM_MARGIN_MIB="\$\{RENSLATE_VRAM_MARGIN:-(\d+)\}"', content)
         assert match is not None, "VRAM_MARGIN_MIB default parameter expansion missing"
         assert match.group(1) == "512", f"Expected margin 512, got {match.group(1)}"
 
     def test_default_load_mode_is_mmap(self) -> None:
         content = SERVER_SCRIPT.read_text(encoding="utf-8")
-        match = re.search(r'LOAD_MODE="\$\{RENVI_LOAD_MODE:-([a-z]+)\}"', content)
+        match = re.search(r'LOAD_MODE="\$\{RENSLATE_LOAD_MODE:-([a-z]+)\}"', content)
         assert match is not None, "LOAD_MODE default parameter expansion missing"
         assert match.group(1) == "mmap", f"Expected load mode mmap, got {match.group(1)}"
 
@@ -202,15 +202,15 @@ class TestTier1MemoryAllocationFlags:
 
     def test_memory_alloc_default_mmap_variable(self) -> None:
         content = SERVER_SCRIPT.read_text(encoding="utf-8")
-        assert 'LOAD_MODE="${RENVI_LOAD_MODE:-mmap}"' in content
+        assert 'LOAD_MODE="${RENSLATE_LOAD_MODE:-mmap}"' in content
 
     def test_memory_alloc_env_override_supported(self) -> None:
         cmd = [
             "bash",
             "-c",
-            f'source <(grep RENVI_LOAD_MODE "{SERVER_SCRIPT}"); echo "$LOAD_MODE"',
+            f'source <(grep RENSLATE_LOAD_MODE "{SERVER_SCRIPT}"); echo "$LOAD_MODE"',
         ]
-        override_env = {**os.environ, "RENVI_LOAD_MODE": "none"}
+        override_env = {**os.environ, "RENSLATE_LOAD_MODE": "none"}
         res = subprocess.run(cmd, env=override_env, capture_output=True, text=True)
         assert res.stdout.strip() == "none"
 
@@ -516,7 +516,7 @@ class TestTier1PartialBatchRecovery:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -548,7 +548,7 @@ class TestTier1PartialBatchRecovery:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -576,7 +576,7 @@ class TestTier1PartialBatchRecovery:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -595,7 +595,7 @@ class TestTier1PartialBatchRecovery:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:fail": bad_markup}, 30, 15),
             ),
         ):
@@ -618,7 +618,7 @@ class TestTier1PartialBatchRecovery:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:1": "Dòng 1", "u:2": "Dòng 2"}, 50, 20),
             ),
         ):
@@ -820,7 +820,7 @@ class TestTier2SingleUnitBatchesAndFallbacks:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:single": "{unclosed brace"}, 30, 20),
             ),
         ):
@@ -832,14 +832,14 @@ class TestTier2SingleUnitBatchesAndFallbacks:
             assert u_single.status is Status.FAILED
 
     def test_single_unit_llm_error_marks_failed(self, renpy_project: Project) -> None:
-        from vitrans.errors import LLMError
+        from renslate.errors import LLMError
 
         with renpy_project.open_db() as db:
             db.save_units_bulk([make_unit("u:single_err", 1, "Hi")])
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=LLMError("Connection lost")),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=LLMError("Connection lost")),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -855,7 +855,7 @@ class TestTier2SingleUnitBatchesAndFallbacks:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:single_ok": "Câu nhắc độc nhất"}, 30, 10),
             ),
         ):
@@ -889,7 +889,7 @@ class TestTier2SingleUnitBatchesAndFallbacks:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_call),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_call),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -909,7 +909,7 @@ class TestTier2SingleUnitBatchesAndFallbacks:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:previously_failed": "Thử lại tôi"}, 30, 10),
             ),
         ):
@@ -1004,7 +1004,7 @@ class TestTier2NonConsecutiveSequencesAndGaps:
         with (
             renpy_project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"u:5": "Dòng 5", "u:25": "Dòng 25", "u:100": "Dòng 100"}, 40, 20),
             ),
         ):
@@ -1058,7 +1058,7 @@ class TestTier3CrossFeatureInteractions:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -1085,7 +1085,7 @@ class TestTier3CrossFeatureInteractions:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_llm_capture),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_llm_capture),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats1 = pipeline.run(limit=2)
@@ -1142,7 +1142,7 @@ class TestTier3CrossFeatureInteractions:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete),
         ):
             pipeline = TranslationPipeline(renpy_project, db, renpy_project.config)
             stats = pipeline.run()
@@ -1162,7 +1162,7 @@ class TestTier3CrossFeatureInteractions:
 
         with (
             renpy_project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_llm),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_llm),
         ):
             pipeline = TranslationPipeline(renpy_project, db, cfg)
             # Run 4 consecutive chunks of 3 units
@@ -1252,7 +1252,7 @@ class TestTier4RealWorldWorkflows:
 
         with (
             project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_llm_chunk1),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_llm_chunk1),
         ):
             pipeline = TranslationPipeline(project, db, project.config)
             stats1 = pipeline.run(limit=3)
@@ -1280,7 +1280,7 @@ class TestTier4RealWorldWorkflows:
 
         with (
             project.open_db() as db,
-            patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_llm_chunk2),
+            patch("renslate.llm.LLMClient.complete_json", side_effect=mock_llm_chunk2),
         ):
             pipeline = TranslationPipeline(project, db, project.config)
             stats2 = pipeline.run(limit=3)
@@ -1292,7 +1292,7 @@ class TestTier4RealWorldWorkflows:
         with (
             project.open_db() as db,
             patch(
-                "vitrans.llm.LLMClient.complete_json",
+                "renslate.llm.LLMClient.complete_json",
                 return_value=({"d:ch1_5": "Tạm biệt nhé."}, 30, 10),
             ),
         ):

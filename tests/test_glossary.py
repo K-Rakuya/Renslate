@@ -1,15 +1,15 @@
-"""Tests for vitrans.glossary."""
+"""Tests for renslate.glossary."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from vitrans.glossary import (
+from renslate.glossary import (
     Glossary,
     mine_glossary_candidates,
     translate_glossary_with_llm,
 )
-from vitrans.models import GlossaryEntry
+from renslate.models import GlossaryEntry
 
 
 def test_glossary_matching_case_sensitive() -> None:
@@ -114,7 +114,7 @@ def test_translate_glossary_with_llm() -> None:
 
 
 def test_is_valid_glossary_term() -> None:
-    from vitrans.glossary import is_valid_glossary_term
+    from renslate.glossary import is_valid_glossary_term
 
     # Rejects pronouns and clause starters
     assert not is_valid_glossary_term("Because I")
@@ -140,7 +140,7 @@ def test_is_valid_glossary_term() -> None:
 
 
 def test_clean_glossary_sanitizes_and_prioritizes() -> None:
-    from vitrans.glossary import clean_glossary
+    from renslate.glossary import clean_glossary
 
     raw_entries = [
         GlossaryEntry("Because I", "", notes="xuất hiện 20 lần"),
@@ -173,3 +173,46 @@ def test_clean_glossary_sanitizes_and_prioritizes() -> None:
     assert not sect_entry.case_sensitive
     assert "Sects" in sect_entry.aliases
 
+
+def test_is_valid_glossary_term_filters_hex_colors_and_conversational() -> None:
+    from renslate.glossary import is_valid_glossary_term
+
+    # Ren'Py color tag hex codes must be rejected
+    assert not is_valid_glossary_term("A05A61")
+    assert not is_valid_glossary_term("DBB498")
+    assert not is_valid_glossary_term("#A05A61")
+    assert not is_valid_glossary_term("DFBF91")
+    assert not is_valid_glossary_term("BE7199")
+
+    # Conversational interjections must be rejected
+    assert not is_valid_glossary_term("Sorry")
+    assert not is_valid_glossary_term("Bye")
+    assert not is_valid_glossary_term("Gulp")
+    assert not is_valid_glossary_term("Eeh")
+    assert not is_valid_glossary_term("Excuse")
+
+    # Genuine game terms must be accepted
+    assert is_valid_glossary_term("Blacksmith")
+    assert is_valid_glossary_term("Magic Store")
+    assert is_valid_glossary_term("Kingdom")
+    assert is_valid_glossary_term("Goddess")
+
+
+def test_mine_glossary_candidates_adaptive_and_extra_terms() -> None:
+    sources = [
+        "Welcome to the Blacksmith.",
+        "We need to report to the Kingdom.",
+    ]
+    # For small source lists (< 200), effective min_count adapts to 1
+    cands = mine_glossary_candidates(
+        sources,
+        min_count=2,
+        extra_terms=["Magic Store", "Lycoris Clan", "A05A61"],
+    )
+    terms = [t for t, _ in cands]
+    assert "Blacksmith" in terms
+    assert "Kingdom" in terms
+    assert "Magic Store" in terms
+    assert "Lycoris Clan" in terms
+    # Hex color code must be omitted even if passed in extra_terms
+    assert "A05A61" not in terms

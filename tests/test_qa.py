@@ -1,10 +1,10 @@
-"""Tests for vitrans.qa."""
+"""Tests for renslate.qa."""
 
 from __future__ import annotations
 
-from vitrans.mask import mask
-from vitrans.models import GlossaryEntry
-from vitrans.qa import QAChecker, clean_translation
+from renslate.mask import mask
+from renslate.models import GlossaryEntry
+from renslate.qa import QAChecker, clean_translation
 
 
 def test_clean_translation() -> None:
@@ -57,8 +57,7 @@ def test_clean_translation() -> None:
     assert clean_translation("(tag)", source="(tag)") == "(tag)"
     assert clean_translation("[...]", source="[...]") == "[...]"
     assert (
-        clean_translation("(Tôi nên làm gì?)", source="(What should I do?)")
-        == "(Tôi nên làm gì?)"
+        clean_translation("(Tôi nên làm gì?)", source="(What should I do?)") == "(Tôi nên làm gì?)"
     )
     assert clean_translation("(statement)") == "(statement)"
 
@@ -158,26 +157,20 @@ def test_qa_pronoun_register_clash() -> None:
     qa = QAChecker()
 
     # 1st person clash: ta vs tôi
-    issues_1st = qa.check_unit(
-        "d:1", "Source text", None, "Ta nghĩ rằng tôi sẽ không đi cùng."
-    )
+    issues_1st = qa.check_unit("d:1", "Source text", None, "Ta nghĩ rằng tôi sẽ không đi cùng.")
     assert any(i.code == "pronoun_register_clash" for i in issues_1st)
 
     # 2nd person clash: ngươi vs cậu
-    issues_2nd = qa.check_unit(
-        "d:2", "Source text", None, "Ngươi nên cẩn thận nhé, cậu hiểu chưa?"
-    )
+    issues_2nd = qa.check_unit("d:2", "Source text", None, "Ngươi nên cẩn thận nhé, cậu hiểu chưa?")
     assert any(i.code == "pronoun_register_clash" for i in issues_2nd)
 
     # Coherent line: no clash
-    issues_clean = qa.check_unit(
-        "d:3", "Source text", None, "Ta sẽ dạy ngươi cách tu luyện."
-    )
+    issues_clean = qa.check_unit("d:3", "Source text", None, "Ta sẽ dạy ngươi cách tu luyện.")
     assert not any(i.code == "pronoun_register_clash" for i in issues_clean)
 
 
 def test_repair_glossary_leakage() -> None:
-    from vitrans.qa import repair_glossary_leakage
+    from renslate.qa import repair_glossary_leakage
 
     glossary = [
         GlossaryEntry("Sect", "Tông môn", aliases=("sects",)),
@@ -239,3 +232,51 @@ def test_qa_speaker_tag_leakage() -> None:
     assert not any(i.code == "speaker_tag_leakage" for i in issues_ok)
 
 
+def test_pronoun_inversion_qa_check() -> None:
+    qa = QAChecker()
+
+    # Charlotte (xưng em, gọi anh) asking "Do you want to die?"
+    # Inverted: Charlotte says "Em muốn chết sao?" (translating you as em)
+    bad_issues = qa.check_unit(
+        "d:1",
+        "Do you want to die, Human?",
+        None,
+        "Em muốn chết sao, con người?",
+        speaker="c",
+        pronoun_rules=("em", "anh"),
+    )
+    assert any(i.code == "pronoun_inversion" and i.severity == "error" for i in bad_issues)
+
+    # Correct: Charlotte says "Anh muốn chết sao?" (calling listener anh)
+    good_issues = qa.check_unit(
+        "d:1",
+        "Do you want to die, Human?",
+        None,
+        "Anh muốn chết sao, con người?",
+        speaker="c",
+        pronoun_rules=("em", "anh"),
+    )
+    assert not any(i.code == "pronoun_inversion" for i in good_issues)
+
+    # Protagonist (xưng anh, gọi em) saying "I can say the same..."
+    # Inverted: Protagonist says "Em cũng có thể nói..." (translating I as em)
+    bad_mc = qa.check_unit(
+        "d:2",
+        "I can say the same about that...",
+        None,
+        "Em cũng có thể nói vậy về chuyện đó...",
+        speaker="mc",
+        pronoun_rules=("anh", "em"),
+    )
+    assert any(i.code == "pronoun_inversion" and i.severity == "error" for i in bad_mc)
+
+    # Correct: Protagonist says "Anh cũng có thể nói..."
+    good_mc = qa.check_unit(
+        "d:2",
+        "I can say the same about that...",
+        None,
+        "Anh cũng có thể nói vậy về chuyện đó...",
+        speaker="mc",
+        pronoun_rules=("anh", "em"),
+    )
+    assert not any(i.code == "pronoun_inversion" for i in good_mc)

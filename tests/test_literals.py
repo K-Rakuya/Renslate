@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from vitrans.literals import (
+from renslate.literals import (
     decode_say_text,
     encode_say_text,
     parse_python_string,

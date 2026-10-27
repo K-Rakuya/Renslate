@@ -1,111 +1,184 @@
-# vitrans
+# Renslate
 
-Bộ công cụ tự động hoá dịch game Ren'Py sang tiếng Việt bằng model local (chạy qua `llama.cpp` `llama-server`, LM Studio hoặc server tương thích OpenAI API). Không sử dụng bản cắt giảm, tích hợp trọn vẹn toàn bộ quy trình: trích xuất, phân tích nhân vật và ngữ cảnh, dịch theo lô kèm bộ nhớ dịch và thuật ngữ, kiểm định chất lượng (QA), xuất/nhập TSV review thủ công và ghi ngược lại vào game.
+> Bộ công cụ tự động hoá dịch game Ren'Py sang tiếng Việt bằng Local LLM — Giữ đúng ngữ cảnh, chuẩn xưng hô và bảo toàn tuyệt đối mã game.
 
-Thiết kế chi tiết xem [docs/DESIGN.md](docs/DESIGN.md).
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20Stdlib)-success.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/Tests-1272%20Passed-brightgreen.svg)](tests/)
+[![Typing](https://img.shields.io/badge/Typing-Strict%20Mypy-blueviolet.svg)](src/renslate/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](#giấy-phép-license)
 
-## Yêu cầu
+---
 
-- Python 3.10 trở lên, **zero external dependency** ở runtime (chỉ dùng thư viện chuẩn Python).
-- Server LLM local: `llama.cpp` (`llama-server`) hoặc LM Studio / Ollama chạy cổng `http://127.0.0.1:8080/v1`.
-- Ren'Py SDK (để sinh khung dịch ban đầu bằng `renpy translate`).
+## Giới thiệu (Overview)
 
-## Cài đặt
+**Renslate** là bộ công cụ mã nguồn mở giúp tự động hoá quy trình bản địa hoá (localization) visual novel nền tảng Ren'Py sang tiếng Việt chất lượng cao bằng các mô hình ngôn ngữ lớn (LLM) chạy cục bộ (như **Qwen 2.5**, **Qwen 3.5**, **MoE** thông qua `llama.cpp`, Ollama hoặc LM Studio).
+
+Renslate được thiết kế để giải quyết triệt để các vấn đề cốt lõi:
+
+- 🎭 **Chuẩn xưng hô & ngữ cảnh**: Tự động nhận diện mối quan hệ giữa các nhân vật để chọn đúng đại từ xưng hô tự nhiên.
+- 🛡️ **Bảo vệ mã game tuyệt đối**: Tự động nhận diện và che chắn toàn bộ biến số (`[player]`), thẻ định dạng (`{b}`, `{color}`) và ký tự đặc biệt của Ren'Py.
+- 📦 **Hỗ trợ game đóng gói (`.rpyc`)**: Tự động đọc và trích xuất câu thoại trực tiếp từ file bytecode `.rpyc` mà không bắt buộc phải có mã nguồn gốc hay cài đặt Ren'Py SDK.
+- ⚡ **Siêu nhẹ & Tiện lợi**: 100% viết bằng thư viện chuẩn Python 3.10+ (**zero external runtime dependencies**), khởi động tức thì, không lo xung đột môi trường.
+- 🖥️ **Giao diện trực quan**: Tích hợp Studio Wizard tương tác từng bước (`renslate wizard`) và bảng điều khiển terminal thời gian thực (`renslate run`).
+
+---
+
+## Cài đặt (Installation)
+
+### Yêu cầu
+- **Python**: Phiên bản 3.10 trở lên.
+- **Server LLM**: `llama-server` (`llama.cpp`), LM Studio, Ollama hoặc bất kỳ server nào tương thích OpenAI API (mặc định tại `http://127.0.0.1:8080/v1`).
+
+### Cài đặt nhanh
 
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/<username>/renslate.git
+cd renslate
+pip install -e .
 ```
 
-Hoặc chạy trực tiếp không cần cài đặt: `PYTHONPATH=src python -m vitrans --help`.
+*Mẹo: Bạn cũng có thể chạy trực tiếp từ thư mục mã nguồn mà không cần cài đặt:*
+```bash
+python3 -m renslate --help
+```
 
-## Quy trình sử dụng hoàn chỉnh
+---
+
+## Bắt đầu nhanh (Quick Start)
+
+### Cách 1: Sử dụng Studio Wizard (Khuyên dùng)
+
+Giao diện tương tác từng bước trên terminal — không cần ghi nhớ câu lệnh:
+
+```bash
+renslate wizard
+# hoặc chỉ cần gõ:
+renslate
+```
+
+Trình hướng dẫn sẽ tự động:
+1. Phát hiện phiên bản game và tệp kịch bản (`.rpy` hoặc `.rpyc`).
+2. Khởi tạo dự án và trích xuất câu thoại vào cơ sở dữ liệu.
+3. Phân tích nhân vật, quan hệ và dịch bảng thuật ngữ.
+4. Kiểm tra kết nối với server LLM.
+5. Tiến hành dịch và hiển thị tiến độ trực quan.
+6. Cài đặt font tiếng Việt và áp dụng bản dịch vào game.
+
+---
+
+### Cách 2: Chạy dịch tự động qua đêm (Autonomous Mode)
+
+Chỉ với một câu lệnh duy nhất, hệ thống sẽ tự động dịch, tự phục hồi khi gặp sự cố mạng và áp dụng ngay vào game khi hoàn tất:
+
+```bash
+renslate run -p /đường/dẫn/đến/game --auto-apply
+```
+
+---
+
+### Cách 3: Quy trình dòng lệnh từng bước (Step-by-step CLI)
+
+Nếu bạn muốn kiểm soát chi tiết từng công đoạn:
 
 ```bash
 # 1. Khởi tạo dự án dịch
-vitrans init -p /đường/dẫn/game --sdk /đường/dẫn/renpy-sdk
+renslate init -p /đường/dẫn/game
 
-# 2. Sinh khung dịch bằng Ren'Py SDK (game/tl/vietnamese/*.rpy)
-vitrans generate -p /đường/dẫn/game
+# 2. Trích xuất câu thoại (hỗ trợ cả .rpy lẫn .rpyc)
+renslate extract -p /đường/dẫn/game
 
-# 3. Trích xuất đơn vị dịch vào kho SQLite (.vitrans/project.db)
-vitrans extract -p /đường/dẫn/game
+# 3. Phân tích nhân vật & thuật ngữ bằng LLM
+renslate analyze -p /đường/dẫn/game --bootstrap
 
-# 4. Phân tích nhân vật, phân cảnh và khai thác ứng viên thuật ngữ
-vitrans analyze -p /đường/dẫn/game
+# 4. Tiến hành dịch thoại theo lô
+renslate translate -p /đường/dẫn/game
 
-# 5. Dịch tự động bằng model local qua llama.cpp
-vitrans translate -p /đường/dẫn/game
+# 5. Kiểm tra chất lượng và phát hiện lỗi bản dịch (QA)
+renslate qa -p /đường/dẫn/game
 
-# 6. Kiểm định chất lượng bản dịch (QA)
-vitrans qa -p /đường/dẫn/game
-
-# 7. (Tuỳ chọn) Xuất TSV để biên tập thủ công trên Excel / Google Sheets
-vitrans export -p /đường/dẫn/game -o review.tsv
-# Sau khi sửa xong trên TSV, nhập lại (ưu tiên manual, tự động đồng bộ vào TM):
-vitrans import -p /đường/dẫn/game -i review.tsv
-
-# 8. Xem thống kê tiến độ
-vitrans status -p /đường/dẫn/game
-
-# 9. Ghi bản dịch an toàn vào game (có sao lưu tự động và kiểm tra tính toàn vẹn)
-vitrans apply -p /đường/dẫn/game --setup-font
+# 6. Cấu hình phông tiếng Việt và áp dụng vào game
+renslate apply -p /đường/dẫn/game --setup-font
 ```
 
-## Bảng lệnh CLI
+---
 
-| Lệnh | Tác dụng |
-|------|----------|
-| `init` | Tạo `.vitrans/config.json` và cơ sở dữ liệu SQLite trong dự án. |
-| `generate` | Gọi Ren'Py SDK (`renpy translate <ngôn ngữ> --no-todo`) để sinh/cập nhật khung dịch. |
-| `extract` | Quét tệp dịch, trích xuất và đồng bộ đơn vị dịch vào DB; idempotent, an toàn khi chạy lại. |
-| `analyze` | Quét kịch bản phát hiện nhân vật, xưng hô, phân đoạn cảnh và khai thác glossary. |
-| `translate` | Dịch theo lô qua `llama.cpp` server; tự động dùng seed UI, tái sử dụng TM exact match, quản lý ngân sách ngữ cảnh (context budgeting). |
-| `qa` | Kiểm tra chất lượng: toàn vẹn placeholder, cú pháp Ren'Py, rò rỉ ngôn ngữ, glossary compliance, tỷ lệ độ dài. |
-| `export` | Xuất bản dịch ra tệp TSV (UTF-8 BOM) để review thủ công. |
-| `import` | Nhập bản dịch đã sửa tay từ TSV, kiểm tra markup và cập nhật vào Translation Memory. |
-| `status` | Thống kê số lượng đơn vị theo loại (`dialogue`, `string`, `ui`) và trạng thái. |
-| `apply` | Ghi bản dịch vào tệp `.rpy` của game; `--dry-run` để xem trước, `--setup-font` để tạo cấu hình phông chữ tiếng Việt. |
+## Bảng tra cứu lệnh CLI (Command Reference)
 
-## Cấu trúc mã nguồn
+| Lệnh | Cú pháp tiêu biểu | Chức năng |
+|:---|:---|:---|
+| `wizard` | `renslate wizard` | Giao diện hướng dẫn tương tác trực quan 6 pha (Studio Mode). |
+| `run` / `auto` | `renslate run [--auto-apply]` | Dịch tự động liên tục với TUI Dashboard theo dõi tiến độ. |
+| `init` | `renslate init -p <game>` | Khởi tạo cấu hình và database cho dự án dịch. |
+| `extract` | `renslate extract -p <game>` | Trích xuất câu thoại và chuỗi UI từ game vào database. |
+| `decompile` | `renslate decompile <target.rpyc>` | Dịch ngược tệp bytecode `.rpyc` thành mã nguồn `.rpy`. |
+| `analyze` | `renslate analyze -p <game> [--bootstrap]` | Phân tích nhân vật, đồ thị quan hệ và khai thác thuật ngữ. |
+| `translate` | `renslate translate -p <game>` | Dịch các câu thoại theo lô qua LLM server. |
+| `qa` | `renslate qa -p <game>` | Kiểm tra tính toàn vẹn cú pháp, biến số và đại từ xưng hô. |
+| `dashboard` | `renslate dashboard` | Bảng điều khiển terminal thời gian thực xem tốc độ và tiến độ. |
+| `preview` | `renslate preview -p <game> [-n 10]` | Xem trước các câu đã dịch song ngữ song song trên terminal. |
+| `export` | `renslate export -p <game> -o review.tsv` | Xuất dữ liệu ra file TSV để biên tập thủ công trên Excel/Sheets. |
+| `import` | `renslate import -p <game> -i review.tsv` | Nạp bản dịch đã sửa tay từ TSV và đồng bộ vào Translation Memory. |
+| `apply` | `renslate apply -p <game> [--setup-font]` | Ghi bản dịch vào tệp dịch của game kèm cấu hình phông tiếng Việt. |
 
-| Mô-đun | Vai trò |
-|--------|---------|
-| `llm` | Client HTTP kết nối `llama-server` (`/v1/chat/completions`), exponential backoff, trích xuất JSON tin cậy. |
-| `context` | Xây dựng prompt tối ưu, phân bổ ngân sách token, ghép glossary, hồ sơ nhân vật, tóm tắt cảnh và lookback. |
-| `translate` | Điều phối dịch: gom lô theo cảnh, tái sử dụng seed UI và TM, gọi LLM, xử lý retry và phân rã lô khi lỗi. |
-| `qa` | Bộ kiểm tra chất lượng dịch: tính toàn vẹn placeholder, rò rỉ ngoại ngữ, vi phạm thuật ngữ, làm sạch hallucination. |
-| `tm` | Translation Memory: so khớp chính xác tức thì và mờ (fuzzy matching) với chỉ mục n-gram tăng tốc. |
-| `glossary` | Quản lý bảng thuật ngữ: khớp từ theo ranh giới và độ dài giảm dần, khai thác ứng viên tự động. |
-| `analyze` | Phân tích kịch bản: phát hiện `Character()`, lập hồ sơ nhân vật, phân đoạn cảnh theo label. |
-| `tsvio` | Xuất/nhập TSV tương thích bảng tính, kiểm định placeholder và khóa nguồn gốc `manual`. |
-| `builtin_ui` | Từ điển hạt giống dịch sẵn cho hàng trăm chuỗi giao diện Ren'Py phổ biến. |
-| `mask` | Che và khôi phục markup (`[var]`, `{i}`, `[[`, `%%`) bằng placeholder, có kiểm tra. |
-| `parser` | Phân tích tệp dịch thành đơn vị dịch và danh sách vấn đề. |
-| `literals` | Mã hoá/giải mã chuỗi lời thoại Ren'Py và chuỗi `old`/`new`. |
-| `db`, `models` | Kho SQLite (lược đồ hỗ trợ migration) và các kiểu dữ liệu domain. |
-| `config`, `project` | Cấu hình có kiểm tra chặt và bố cục thư mục dự án. |
-| `writer` | Ghi bản dịch nguyên tử vào tệp dịch, drift detection và sinh `vitrans_setup.rpy`. |
-| `sdk`, `cli` | Gọi Ren'Py SDK và giao diện dòng lệnh. |
+---
 
-## Tài liệu kỹ thuật & Hướng dẫn vận hành
+## Biên tập thủ công (Human Review)
 
-- [Tài liệu Thiết kế Kiến trúc (DESIGN.md)](docs/DESIGN.md)
-- [Hồ sơ Quyết định Kiến trúc (ADR - Architecture Decision Records)](docs/ARCHITECTURE_DECISIONS.md)
-- [Hướng dẫn Vận hành & Chạy ngầm (RUNBOOK.md)](docs/RUNBOOK.md)
-
-## Dịch tự động qua đêm (Unattended Overnight Runner)
-
-Để tiến hành dịch toàn bộ visual novel lớn (hàng chục nghìn câu thoại) hoàn toàn tự động, tự phục hồi khi server LLM gặp sự cố và tránh lặp vô tận:
+Renslate hỗ trợ xuất/nhập tệp bảng tính TSV (tương thích hoàn toàn với Microsoft Excel và Google Sheets):
 
 ```bash
-python3 scripts/unattended_runner.py -p /đường/dẫn/game --auto-apply
+# Xuất các câu cần xem xét ra file TSV
+renslate export -p /đường/dẫn/game -o review.tsv
+
+# Sau khi chỉnh sửa xong, nạp lại vào dự án:
+renslate import -p /đường/dẫn/game -i review.tsv
 ```
 
-## Phát triển & Kiểm thử
+*Các câu chỉnh sửa thủ công sẽ được gắn nhãn `manual` và tự động lưu vào Bộ nhớ dịch (Translation Memory) để ưu tiên tái sử dụng, không bị ghi đè bởi máy dịch.*
+
+---
+
+## Cấu hình LLM Server (Local Inference)
+
+Mặc định, Renslate kết nối tới `http://127.0.0.1:8080/v1` (tương thích OpenAI API). Bạn có thể tùy chỉnh endpoint hoặc model trong tệp `.renslate/config.json`.
+
+Dự án có sẵn script khởi chạy `llama.cpp` (`llama-server`) được tối ưu hoá cho cấu hình máy tính cá nhân (tự động cân đối VRAM, hạn chế hao mòn SSD và tiết kiệm tài nguyên):
 
 ```bash
-pytest -v
+./scripts/run_qwen_server.sh
+```
+
+---
+
+## Cấu trúc không gian làm việc (`.renslate/`)
+
+Khi bạn làm việc trên một tựa game, Renslate lưu trữ dữ liệu tại thư mục `.renslate/` bên trong thư mục trò chơi:
+
+- `config.json`: Cấu hình dự án (ngôn ngữ đích, endpoint LLM, kích thước batch).
+- `project.db`: Cơ sở dữ liệu SQLite lưu trữ toàn bộ đơn vị dịch và Translation Memory.
+- `characters.json`: Danh sách hồ sơ nhân vật, hình mẫu tính cách và quy tắc xưng hô.
+- `relationships.json`: Mạng lưới đồ thị quan hệ giữa các nhân vật (cho phép xem và chỉnh sửa).
+- `glossary.json`: Bảng thuật ngữ chuyên ngành đã dịch.
+- `backups/`: Các bản sao lưu tự động trước mỗi lần ghi tệp vào game.
+
+---
+
+## Kiểm thử & Phát triển (Contributing)
+
+Dự án duy trì tiêu chuẩn kiểm thử tự động nghiêm ngặt:
+
+```bash
+# Chạy bộ test suite (1,272 test cases):
+pytest -q
+
+# Kiểm tra linting và tĩnh kiểu:
 ruff check .
 mypy src tests
 ```
 
+---
+
+## Giấy phép (License)
+
+Dự án được phân phối dưới giấy phép **MIT License**.

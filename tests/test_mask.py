@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from vitrans.errors import MarkupError
-from vitrans.mask import (
+from renslate.errors import MarkupError
+from renslate.mask import (
     PlaceholderError,
     TokenKind,
     auto_repair_placeholders,
@@ -228,3 +228,20 @@ def test_validate_raw_accepts_symmetric_and_universal_closers() -> None:
     src_slash = "{i}It'll burst!{/}"
     assert not validate_raw(src_slash, "{i}Nó sẽ nổ tung!{/i}")
 
+
+def test_auto_repair_enclosing_multi_tag_pairs() -> None:
+    src = "{size=50}{font=fonts/chinese-rocks.otf}After chatting with Dyna{/font}{/size}"
+    m = mask(src)
+    repaired = auto_repair_placeholders(m, "Sau khi trò chuyện với Dyna")
+    assert repaired == "⟦T1⟧⟦T2⟧Sau khi trò chuyện với Dyna⟦/T2⟧⟦/T1⟧"
+    expected = "{size=50}{font=fonts/chinese-rocks.otf}Sau khi trò chuyện với Dyna{/font}{/size}"
+    assert unmask(m, repaired) == expected
+
+
+def test_auto_repair_strips_hallucinated_outer_tags() -> None:
+    src = "{color=#950000}Ups...\nTry Again.{/color}"
+    m = mask(src)
+    raw_model_output = "{font=fonts/f.otf}⟦T1⟧Rơi vào...⟦L1⟧Thử lại.{/font}{/size}"
+    repaired = auto_repair_placeholders(m, raw_model_output)
+    assert repaired == "⟦T1⟧Rơi vào...⟦L1⟧Thử lại.⟦/T1⟧"
+    assert unmask(m, repaired) == "{color=#950000}Rơi vào...\nThử lại.{/color}"

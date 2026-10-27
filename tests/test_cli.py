@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from renslate import __version__
+from renslate.cli import main
 from tests.test_sdk import make_sdk
-from vitrans import __version__
-from vitrans.cli import main
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -44,8 +44,8 @@ def test_init_creates_configuration_and_database(
     root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["init", "-p", str(root), "--lang", "vi_VN"]) == 0
-    assert (root / ".vitrans" / "config.json").is_file()
-    assert (root / ".vitrans" / "project.db").is_file()
+    assert (root / ".renslate" / "config.json").is_file()
+    assert (root / ".renslate" / "project.db").is_file()
     assert "Đã khởi tạo" in capsys.readouterr().out
 
     assert main(["init", "-p", str(root)]) == 1
@@ -65,7 +65,7 @@ def test_commands_require_an_initialised_project(
 ) -> None:
     for command in ("extract", "apply", "status", "generate"):
         assert main([command, "-p", str(root)]) == 1
-        assert "vitrans init" in capsys.readouterr().err
+        assert "renslate init" in capsys.readouterr().err
 
 
 def test_extract_status_and_apply_workflow(
@@ -73,7 +73,7 @@ def test_extract_status_and_apply_workflow(
 ) -> None:
     capsys.readouterr()
     assert main(["status", "-p", str(translated_root)]) == 0
-    assert "vitrans extract" in capsys.readouterr().out
+    assert "renslate extract" in capsys.readouterr().out
 
     assert main(["extract", "-p", str(translated_root)]) == 0
     assert "11 đơn vị dịch" in capsys.readouterr().out

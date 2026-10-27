@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from vitrans.errors import SdkError
-from vitrans.sdk import build_command, find_launcher, generate_translations
+from renslate.errors import SdkError
+from renslate.sdk import build_command, find_launcher, generate_translations
 
 LAUNCHER = "renpy.exe" if os.name == "nt" else "renpy.sh"
 

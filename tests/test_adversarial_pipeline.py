@@ -1,4 +1,4 @@
-"""Tier 5 Adversarial Stress Harness for ViTrans Translation Pipeline Resiliency & Continuity.
+"""Tier 5 Adversarial Stress Harness for Renslate Translation Pipeline Resiliency & Continuity.
 
 Empirically validates:
 1. Partial batch recovery across varying batch sizes (5, 20) with failures at index 0,
@@ -19,12 +19,12 @@ from unittest.mock import patch
 
 import pytest
 
-from vitrans.config import Config
-from vitrans.context import ContextBuilder, LookbackItem
-from vitrans.errors import LLMError
-from vitrans.models import Status, Unit, UnitKind
-from vitrans.project import Project
-from vitrans.translate import TranslationPipeline
+from renslate.config import Config
+from renslate.context import ContextBuilder, LookbackItem
+from renslate.errors import LLMError
+from renslate.models import Status, Unit, UnitKind
+from renslate.project import Project
+from renslate.translate import TranslationPipeline
 
 
 def _create_test_project(tmp_path: Path, name: str = "stress_game") -> Project:
@@ -143,7 +143,7 @@ def test_partial_batch_recovery_empirical_matrix(
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -201,7 +201,7 @@ def test_partial_batch_recovery_permanent_failure(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -247,7 +247,7 @@ def test_partial_batch_missing_key_in_response(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()
@@ -311,7 +311,7 @@ def test_bounded_lookback_buffer_100_units(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
         patch.object(TranslationPipeline, "_translate_batch", tracked_translate_batch),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
@@ -374,7 +374,7 @@ def test_cross_chunk_dialogue_continuity(tmp_path: Path) -> None:
     with (
         project.open_db() as db,
         patch(
-            "vitrans.llm.LLMClient.complete_json",
+            "renslate.llm.LLMClient.complete_json",
             side_effect=lambda sys, usr, schema, **kw: (
                 {uid: f"Lời thoại dịch {uid}" for uid in schema["properties"]},
                 100,
@@ -398,7 +398,7 @@ def test_cross_chunk_dialogue_continuity(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_chunk2_call),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_chunk2_call),
     ):
         p2 = TranslationPipeline(project, db, cfg)
         stats2 = p2.run(limit=10)
@@ -506,7 +506,7 @@ def test_fallback_retry_llm_network_error(tmp_path: Path) -> None:
 
     with (
         project.open_db() as db,
-        patch("vitrans.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
     ):
         pipeline = TranslationPipeline(project, db, cfg)
         stats = pipeline.run()

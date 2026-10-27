@@ -1,8 +1,8 @@
-"""Tests for vitrans.builtin_ui."""
+"""Tests for renslate.builtin_ui."""
 
 from __future__ import annotations
 
-from vitrans.builtin_ui import BUILTIN_UI_SEEDS, get_builtin_ui_translation
+from renslate.builtin_ui import BUILTIN_UI_SEEDS, get_builtin_ui_translation
 
 
 def test_known_seeds() -> None:
