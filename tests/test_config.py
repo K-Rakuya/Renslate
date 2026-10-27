@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from vitrans.config import Config
-from vitrans.errors import ConfigError
+from renslate.config import Config
+from renslate.errors import ConfigError
 
 
 def test_defaults_match_the_design_document() -> None:

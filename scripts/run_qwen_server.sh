@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Renvi / ViTrans - Native MoE LLM Server Launcher (Standardized & Low-Overhead)
+# Renslate - Native MoE LLM Server Launcher (Standardized & Low-Overhead)
 # Architecture: Qwen3.6-35B-A3B-UD-Q3_K_M (MoE, ~3B active params / token)
 # Platform    : AMD Ryzen 7 8845H (8C/16T Zen 4) + RTX 4060 Laptop 8GB + 16GB RAM
 # Optimization: 1) Maximum GPU offload (-fit on, FlashAttention on, KV q8_0)
@@ -30,33 +30,33 @@ msg_err()   { printf "${CLR_RED}${CLR_BOLD}[ERR]${CLR_RESET}  %s\n" "$*" >&2; }
 DEFAULT_SERVER_BIN="/run/media/rakuya/Data/Native Llama/bin/b11838-native/bin/llama-server"
 DEFAULT_MODEL_PATH="/run/media/rakuya/Data/Native Llama/llama.cpp/build-linux/bin/Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
 
-SERVER_BIN="${RENVI_SERVER_BIN:-$DEFAULT_SERVER_BIN}"
-MODEL_PATH="${RENVI_MODEL_PATH:-$DEFAULT_MODEL_PATH}"
-HOST="${RENVI_HOST:-127.0.0.1}"
-PORT="${RENVI_PORT:-8080}"
+SERVER_BIN="${RENSLATE_SERVER_BIN:-$DEFAULT_SERVER_BIN}"
+MODEL_PATH="${RENSLATE_MODEL_PATH:-$DEFAULT_MODEL_PATH}"
+HOST="${RENSLATE_HOST:-127.0.0.1}"
+PORT="${RENSLATE_PORT:-8080}"
 
-CTX_SIZE="${RENVI_CTX:-6144}"
-SLOTS="${RENVI_SLOTS:-1}"
-THREADS="${RENVI_THREADS:-4}"                # 4 physical cores saturate dual-channel DDR5 without thermal throttling
-BATCH="${RENVI_BATCH:-1024}"
-UBATCH="${RENVI_UBATCH:-512}"
-VRAM_MARGIN_MIB="${RENVI_VRAM_MARGIN:-512}"  # Reserve headroom for KDE/Wayland compositor
-MAX_TOKENS="${RENVI_MAX_TOKENS:-3500}"
-PROMPT_CACHE_MIB="${RENVI_PROMPT_CACHE_MIB:-512}"
-CTX_CHECKPOINTS="${RENVI_CTX_CHECKPOINTS:-4}"
-TEMP="${RENVI_TEMP:-0.3}"
-DEVICE="${RENVI_DEVICE:-}"
-WEBUI="${RENVI_WEBUI:-0}"
-SLEEP_IDLE="${RENVI_SLEEP_IDLE:--1}"
-WAIT_SECS="${RENVI_WAIT_SECS:-240}"
-LOAD_MODE="${RENVI_LOAD_MODE:-mmap}"
+CTX_SIZE="${RENSLATE_CTX:-6144}"
+SLOTS="${RENSLATE_SLOTS:-1}"
+THREADS="${RENSLATE_THREADS:-4}"                # 4 physical cores saturate dual-channel DDR5 without thermal throttling
+BATCH="${RENSLATE_BATCH:-1024}"
+UBATCH="${RENSLATE_UBATCH:-512}"
+VRAM_MARGIN_MIB="${RENSLATE_VRAM_MARGIN:-512}"  # Reserve headroom for KDE/Wayland compositor
+MAX_TOKENS="${RENSLATE_MAX_TOKENS:-3500}"
+PROMPT_CACHE_MIB="${RENSLATE_PROMPT_CACHE_MIB:-512}"
+CTX_CHECKPOINTS="${RENSLATE_CTX_CHECKPOINTS:-4}"
+TEMP="${RENSLATE_TEMP:-0.3}"
+DEVICE="${RENSLATE_DEVICE:-}"
+WEBUI="${RENSLATE_WEBUI:-0}"
+SLEEP_IDLE="${RENSLATE_SLEEP_IDLE:--1}"
+WAIT_SECS="${RENSLATE_WAIT_SECS:-240}"
+LOAD_MODE="${RENSLATE_LOAD_MODE:-mmap}"
 
 # ------------------------------------------------------------------------------
 # 2. Pre-Flight Diagnostics
 # ------------------------------------------------------------------------------
 printf "${CLR_BOLD}${CLR_CYAN}"
 echo "================================================================================"
-echo "          Renvi / ViTrans — Native MoE LLM Server (llama.cpp)                   "
+echo "          Renslate — Native MoE LLM Server (llama.cpp)                          "
 echo "================================================================================"
 printf "${CLR_RESET}"
 
@@ -229,7 +229,7 @@ if (( HEALTH_OK )); then
     printf "║ • Tuổi thọ SSD   : An toàn tuyệt đối (-lzm off, -lm mmap, 0 ghi đĩa)        ║\n"
     echo "╚══════════════════════════════════════════════════════════════════════════════╝"
     printf "${CLR_RESET}\n"
-    msg_ok "Hệ thống sẵn sàng phục vụ tiến trình dịch ViTrans."
+    msg_ok "Hệ thống sẵn sàng phục vụ tiến trình dịch Renslate."
     msg_info "Để chạy dịch tự động trong terminal khác:"
     printf "  ${CLR_CYAN}python scripts/unattended_runner.py translate -p \"<đường-dẫn-game>\"${CLR_RESET}\n"
     msg_info "Nhấn ${CLR_BOLD}Ctrl+C${CLR_RESET} để dừng máy chủ bất cứ lúc nào.\n"

@@ -1,10 +1,10 @@
-"""Adversarial stress-testing of ViTrans Core Subsystems.
+"""Adversarial stress-testing of Renslate Core Subsystems.
 
 Empirically tests:
 1. Glossary regex compilation amortization (5,000 synthetic entries < 100ms)
 2. Mask tag stack LIFO balancing under adversarial nesting & Ren'Py edge-case tags
 3. SQLite bulk persistence (5,000 units, PRAGMAs, WAL mode, transaction atomicity)
-4. Zero external runtime dependencies in src/vitrans/ (stdlib only)
+4. Zero external runtime dependencies in src/renslate/ (stdlib only)
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from vitrans.db import Database
-from vitrans.glossary import Glossary
-from vitrans.mask import validate_raw
-from vitrans.models import GlossaryEntry, Origin, Status, Unit, UnitKind
+from renslate.db import Database
+from renslate.glossary import Glossary
+from renslate.mask import validate_raw
+from renslate.models import GlossaryEntry, Origin, Status, Unit, UnitKind
 
 
 def test_glossary_regex_amortization_benchmark() -> None:
@@ -186,12 +186,12 @@ def test_database_bulk_persistence_and_pragmas(tmp_path: Path) -> None:
 
 
 def test_zero_runtime_external_dependencies() -> None:
-    """Verify that src/vitrans/ strictly imports only Python standard library modules."""
-    src_dir = Path("src/vitrans")
-    assert src_dir.is_dir(), "src/vitrans directory not found"
+    """Verify that src/renslate/ strictly imports only Python standard library modules."""
+    src_dir = Path("src/renslate")
+    assert src_dir.is_dir(), "src/renslate directory not found"
 
     stdlib_modules = set(sys.stdlib_module_names)
-    internal_pkgs = {"vitrans"}
+    internal_pkgs = {"renslate"}
 
     external_imports: list[tuple[str, int, str]] = []
 
@@ -212,7 +212,7 @@ def test_zero_runtime_external_dependencies() -> None:
                         external_imports.append((str(py_path), node.lineno, node.module))
 
     assert not external_imports, (
-        f"External runtime dependencies detected in src/vitrans/: {external_imports}"
+        f"External runtime dependencies detected in src/renslate/: {external_imports}"
     )
 
 

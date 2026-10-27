@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from vitrans.db import MIGRATIONS, Database
-from vitrans.errors import ProjectError
-from vitrans.models import Origin, Slot, Status, TMEntry, Unit, UnitKind
+from renslate.db import MIGRATIONS, Database
+from renslate.errors import ProjectError
+from renslate.models import Origin, Slot, Status, TMEntry, Unit, UnitKind
 
 
 def make_unit(uid: str = "d:one", **overrides: object) -> Unit:
@@ -25,7 +25,7 @@ def make_unit(uid: str = "d:one", **overrides: object) -> Unit:
 
 @pytest.fixture
 def db(tmp_path: Path) -> Database:
-    return Database.open(tmp_path / ".vitrans" / "project.db", create=True)
+    return Database.open(tmp_path / ".renslate" / "project.db", create=True)
 
 
 def test_open_requires_existing_file_unless_creating(tmp_path: Path) -> None:

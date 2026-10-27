@@ -1,4 +1,4 @@
-"""Tests for new vitrans CLI commands (analyze, qa, export, import)."""
+"""Tests for new renslate CLI commands (analyze, qa, export, import)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vitrans.cli import main
+from renslate.cli import main
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -54,7 +54,7 @@ def test_cli_export_and_import_command(
 def test_cli_translate_mocked(project_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     target_val = "Xin chào ⟦V1⟧! ⟦T1⟧Chào mừng⟦/T1⟧ đến câu lạc bộ."
     with patch(
-        "vitrans.llm.LLMClient.complete_json",
+        "renslate.llm.LLMClient.complete_json",
         return_value=({"d:start_a1b2c3d4": target_val}, 50, 20),
     ):
         assert main(["translate", "-p", str(project_root), "--limit", "1"]) == 0
@@ -75,7 +75,7 @@ def test_cli_preview_command(project_root: Path, capsys: pytest.CaptureFixture[s
     # After translating 1 unit
     target_val = "Xin chào ⟦V1⟧! ⟦T1⟧Chào mừng⟦/T1⟧ đến câu lạc bộ."
     with patch(
-        "vitrans.llm.LLMClient.complete_json",
+        "renslate.llm.LLMClient.complete_json",
         return_value=({"d:start_a1b2c3d4": target_val}, 50, 20),
     ):
         main(["translate", "-p", str(project_root), "--limit", "1"])

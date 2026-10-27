@@ -1,14 +1,60 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+
+# Packaging & distribution
 build/
 dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
 .venv/
+venv/
+ENV/
+env/
+
+# Testing & quality caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.hypothesis/
+
+# Renslate runtime workspace & databases
+.renslate/
 .vitrans/
+*.db
+*.db-wal
+*.db-shm
+backup/
+
+# LLM model weights & server downloads
+*.gguf
+*.bin
+
+# Ren'Py compiled bytecode & saves
+*.rpyc
+*.rpymc
+*.rpa
+saves/
+
+# Agent session artifacts & temporary scratch
 .agents/
-docs/
+scratch/
+ORIGINAL_REQUEST.md
+PROJECT.md
+TEST_INFRA.md
+TEST_READY.md
+
+# Operating System & IDE artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

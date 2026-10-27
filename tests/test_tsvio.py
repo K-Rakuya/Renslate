@@ -1,12 +1,12 @@
-"""Tests for vitrans.tsvio."""
+"""Tests for renslate.tsvio."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from vitrans.db import Database
-from vitrans.models import Origin, Slot, Status, Unit, UnitKind
-from vitrans.tsvio import export_tsv, import_tsv
+from renslate.db import Database
+from renslate.models import Origin, Slot, Status, Unit, UnitKind
+from renslate.tsvio import export_tsv, import_tsv
 
 
 def test_export_and_import_tsv(tmp_path: Path) -> None:

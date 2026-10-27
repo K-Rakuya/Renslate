@@ -1,4 +1,4 @@
-# vitrans — Tài liệu thiết kế
+# renslate — Tài liệu thiết kế
 
 Bộ công cụ tự động hoá dịch game Ren'Py sang tiếng Việt bằng model local **Gemma 4 26B MoE (IQ4)**, bao phủ toàn bộ UI lẫn lời thoại, có lưu trữ trạng thái và tối ưu ngữ cảnh để giữ chất lượng dịch ổn định xuyên suốt game.
 
@@ -25,7 +25,7 @@ Bộ công cụ tự động hoá dịch game Ren'Py sang tiếng Việt bằng 
 - **Context window hạn chế** của model local (giả định 8k–16k token hữu dụng) → phải chọn lọc ngữ cảnh.
 - **Tốc độ thấp** (MoE IQ4 trên GPU/CPU cá nhân) → giảm số lần gọi, tái sử dụng bản dịch, chạy được qua đêm, resume.
 - **Không làm hỏng game**: mọi thao tác ghi đều backup trước; không đụng vào `.rpy` gốc.
-- **Cài đặt đơn giản**: không `pip install`; một thư mục, chạy bằng `python -m vitrans`.
+- **Cài đặt đơn giản**: không `pip install`; một thư mục, chạy bằng `python -m renslate`.
 
 ---
 
@@ -76,25 +76,142 @@ Không phụ thuộc SDK; đổi backend chỉ cần đổi `base_url`/`model` t
                           [4 qa] ──> cờ lỗi ──> [5 review TSV export/import]
 ```
 
-### 3.1 Cấu trúc module
+### 3.1 Cấu trúc module (Kiến trúc phân tầng DAG Subpackages)
+
+Renslate được tổ chức thành 4 domain subpackage chuyên biệt với tính gắn kết cao (high cohesion) và phân tách ranh giới rõ ràng, tuân thủ nguyên tắc Directed Acyclic Graph (DAG) không phụ thuộc vòng:
 
 ```
-vitrans/
-  __main__.py      # CLI: init | extract | analyze | translate | qa | export | import | apply | status
-  config.py        # nạp/kiểm tra config.json, giá trị mặc định
-  db.py            # schema, migrations, truy vấn
-  parser.py        # tách file tl và .rpy thành đơn vị dịch
-  mask.py          # mask/unmask escape, biến, tag; kiểm tra placeholder
-  glossary.py      # nạp glossary, khớp thuật ngữ theo batch, khai thác ứng viên
-  tm.py            # translation memory: khớp chính xác + fuzzy
-  context.py       # dựng prompt: hồ sơ, tóm tắt, lookback, giới hạn token
-  llm.py           # client HTTP, retry, phân tích JSON
-  qa.py            # các kiểm tra chất lượng
-  tsvio.py         # export/import TSV
-  writer.py        # sinh file tl, backup, font, chọn ngôn ngữ
-  builtin_ui.py    # seed chuỗi UI built-in của Ren'Py
-tests/             # mock LLM server + test pipeline
-docs/DESIGN.md
+┌──────────────────────────────────────────────┐
+│                 renslate.cli                  │
+└──────────────────────┬───────────────────────┘
+                       │
+       ┌───────────────▼──────────────┐
+       │          renslate.ui          │
+       └───────┬──────────────┬───────┘
+               │              │
+       ┌───────▼────────┐     │
+       │ renslate.engine │     │
+       └───┬────────────┤     │
+           │            │     │
+           │     ┌──────▼─────▼──────┐
+           │     │   renslate.renpy   │
+           │     └──────┬────────────┘
+           │            │
+       ┌───▼────────────▼────────────┐
+       │        renslate.core         │
+       └─────────────────────────────┘
+```
+
+Chi tiết các tầng module trong `src/renslate/`:
+
+```
+src/renslate/
+├── __init__.py               # Re-export toàn bộ symbol công khai trong __all__, ánh xạ sys.modules tương thích ngược
+├── __main__.py               # Entrypoint gọi trực tiếp renslate.cli.main()
+├── cli.py                    # Bộ phân tích CLI với các lệnh init, extract, analyze, translate, run, auto, wizard...
+├── core/                     # Tầng nền tảng (Domain Primitives & Storage) - Không phụ thuộc package nội bộ nào
+│   ├── __init__.py           # Re-export các symbol cốt lõi
+│   ├── config.py             # Nạp/kiểm tra config.json, ràng buộc kiểu dữ liệu
+│   ├── db.py                 # SQLite WAL store, 32 câu lệnh SQL prepared, iterator zero-copy iter_units
+│   ├── errors.py             # Hệ thống ngoại lệ domain kế thừa RenslateError
+│   ├── models.py             # Các dataclass bất biến (Unit, Status, Origin, UnitKind, GlossaryEntry...)
+│   ├── project.py            # Quản lý đường dẫn dự án, cấu trúc thư mục, sao lưu filesystem
+│   └── textio.py             # Thao tác đọc ghi tệp nguyên tử (write_atomic), chuẩn UTF-8
+├── renpy/                    # Tầng xử lý Ren'Py (AST Parsing & Code Generation) - Chỉ phụ thuộc core
+│   ├── __init__.py           # Re-export các symbol Ren'Py
+│   ├── builtin_ui.py         # Seed dịch giao diện chuẩn của engine Ren'Py
+│   ├── extract.py            # Trích xuất đơn vị dịch từ kịch bản và khung translate
+│   ├── literals.py           # Bộ mã hóa/giải mã chuỗi say và Python string literal
+│   ├── mask.py               # FSM lexer zero-allocation che/khôi phục markup và validator O(N)
+│   ├── parser.py             # Bộ phân tích từ vựng và cú pháp AST khối .rpy
+│   ├── sdk.py                # Tích hợp Ren'Py SDK để sinh khung bản dịch
+│   └── writer.py             # Ghi đè bản dịch nguyên tử vào .rpy, cấu hình font tiếng Việt
+├── engine/                   # Tầng điều phối dịch & NLP (Translation & Quality) - Phụ thuộc renpy và core
+│   ├── __init__.py           # Re-export các symbol engine
+│   ├── analyze.py            # Phân tích nhân vật, phân đoạn cảnh, khai thác glossary
+│   ├── context.py            # Knapsack token budgeting đàn hồi, thu gọn lookback history
+│   ├── glossary.py           # Công cụ so khớp thuật ngữ O(1) amortized, trích xuất thực thể
+│   ├── llm.py                # HTTP client tương thích OpenAI cho llama-server local, retry có backoff
+│   ├── qa.py                 # Bộ quy tắc kiểm tra chất lượng dịch (ngữ pháp, độ dài, rò rỉ ngôn ngữ)
+│   ├── tm.py                 # Translation Memory với chỉ mục đảo 3-gram và cắt tỉa ngưỡng toán học
+│   ├── translate.py          # Pipeline điều phối dịch batch với cơ chế phục hồi lỗi từng dòng (partial recovery)
+│   └── tsvio.py              # Xuất/nhập TSV hỗ trợ UTF-8 BOM cho người dịch hiệu đính
+└── ui/                       # Tầng giao diện người dùng (Terminal UI & Runner) - Phụ thuộc engine, renpy, core
+    ├── __init__.py           # Re-export widget UI và runner
+    ├── dashboard.py          # LiveDashboard: Bảng điều khiển đa panel ANSI/VT100 thời gian thực
+    ├── progress.py           # Thanh tiến độ Unicode khối phân số sub-character (1/8 ký tự)
+    ├── runner.py             # Pipeline tự động ngầm (autonomous runner), kiểm tra sức khỏe server, xử lý SIGINT 2 giai đoạn
+    ├── tables.py             # Bảng Unicode box-drawing thuần thư viện chuẩn, căn chỉnh cột và rút gọn
+    ├── theme.py              # Định nghĩa mã màu ANSI, kiểm tra hỗ trợ TTY / NO_COLOR, đo độ rộng ký tự Unicode
+    └── wizard.py             # Thuật sĩ tương tác từng bước hướng dẫn thiết lập dự án
+
+scripts/
+└── unattended_runner.py      # Lớp vỏ bọc mỏng (thin delegation wrapper) gọi renslate run, giữ tương thích hàm cũ
+```
+
+**Cơ chế tương thích ngược (Backward Compatibility Shims):**
+- 21 tệp shim tương thích ngược đặt trực tiếp tại `src/renslate/*.py` (`models.py`, `db.py`, `mask.py`, `translate.py`...). Mỗi shim re-export toàn bộ symbol từ subpackage đích, hỗ trợ static typing (`if TYPE_CHECKING:`) cho mypy/IDE, và gắn `sys.modules[__name__]` vào module đích.
+- Tệp `src/renslate/__init__.py` cung cấp bảng ánh xạ `_LEGACY_MAP`, tự động đăng ký các module cũ vào `sys.modules`. Điều này đảm bảo các lệnh mock trong kiểm thử (ví dụ `patch("renslate.llm.LLMClient.complete_json")`) hoạt động chính xác 100% mà không bị lệch đối tượng.
+
+### 3.2 Quy trình thực thi của Autonomous Runner (Sequence Diagram)
+
+Quy trình vận hành tự động của `renslate run` / `renslate auto` được mô tả trong biểu đồ tuần tự dưới đây:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Người dùng / CI
+    participant CLI as renslate.cli
+    participant Runner as renslate.ui.runner
+    participant HealthCheck as HealthCheck (HTTP)
+    participant AutoBootstrap as AutoBootstrap
+    participant Pipeline as TranslationPipeline
+    participant LLMClient as LLMClient (llama-server)
+    participant PartialRecovery as PartialRecovery
+    participant DB as Database (SQLite WAL)
+    participant Writer as Ren'Py Writer
+
+    User->>CLI: renslate run / auto [args]
+    CLI->>Runner: run_unattended_pipeline(...)
+    Runner->>HealthCheck: check_server_health() / detect_server_model()
+    HealthCheck-->>Runner: 200 OK (Model info: Qwen/Gemma)
+
+    Runner->>AutoBootstrap: bootstrap_if_needed(project, db)
+    opt Dự án chưa khởi tạo hoặc thiếu template
+        AutoBootstrap->>DB: auto_init() / auto_extract()
+        AutoBootstrap->>DB: auto_analyze() / LLM enrichment
+    end
+
+    loop Theo từng chunk (mỗi chunk 100 units)
+        Runner->>DB: iter_pending_units(limit=chunk_size)
+        DB-->>Runner: Stream pending units
+
+        Runner->>Pipeline: translate_units(chunk_units)
+        Pipeline->>Pipeline: ContextBuilder: Knapsack token budget & lookback
+        Pipeline->>LLMClient: complete_json(prompt)
+
+        alt Phản hồi hợp lệ đầy đủ
+            LLMClient-->>Pipeline: JSON result map
+        else Lỗi cục bộ / parse JSON / timeout
+            LLMClient-->>PartialRecovery: Lỗi hoặc JSON không trọn vẹn
+            PartialRecovery->>LLMClient: Retry từng dòng (fallback 1 unit)
+            PartialRecovery-->>Pipeline: Kết quả sau phục hồi cục bộ
+        end
+
+        Pipeline->>DB: save_units_bulk(translated/flagged/failed)
+        DB-->>Pipeline: Commit WAL transaction
+        Pipeline-->>Runner: Progress callback (throughput, ETA)
+        Runner->>Runner: LiveDashboard: cập nhật màn hình ANSI
+    end
+
+    opt Khi cờ --auto-apply được bật và 100% hoàn tất
+        Runner->>Writer: apply_translations(project, db)
+        Writer->>Writer: Backup atomic .rpy & thiết lập font
+        Writer-->>Runner: Ghi bản dịch hoàn tất
+    end
+
+    Runner-->>CLI: Session summary card (0 lỗi, throughput)
+    CLI-->>User: Kết thúc phiên dịch an toàn
 ```
 
 ---
@@ -117,8 +234,40 @@ docs/DESIGN.md
 - **Chuỗi (`strings`):** khoá bằng văn bản gốc đã chuẩn hoá, trùng nhau gộp một `uid` (dịch một lần, dùng nhiều nơi).
 - Chạy lại `extract` là **idempotent**: unit mới được thêm, unit cũ giữ nguyên bản dịch, unit biến mất bị đánh dấu `obsolete` (không xoá).
 
-### 4.3 Trạng thái unit
-`pending → translated → qa_flagged → reviewed` (ngoài ra `obsolete`, `failed`). `manual` luôn khoá.
+### 4.3 Trạng thái unit và Vòng đời bản dịch (State Diagram)
+
+Các đơn vị dịch (`Unit`) chuyển đổi trạng thái qua các giai đoạn trong vòng đời dịch thuật:
+- `PENDING`: Đơn vị mới trích xuất từ kịch bản Ren'Py hoặc mới nhập, đang chờ xử lý.
+- `TRANSLATED`: Đã dịch thành công qua LLM, hoặc tái sử dụng từ Translation Memory (TM), hoặc nạp từ seed built-in UI.
+- `QA_FLAGGED`: Đã dịch nhưng bị gắn cờ cảnh báo chất lượng (tỷ lệ độ dài bất thường, rò rỉ ngôn ngữ nguồn, vi phạm glossary).
+- `FAILED`: Dịch thất bại do lỗi không thể khắc phục (mô hình trả JSON hỏng, timeout lặp lại, lỗi khôi phục markup).
+- `REVIEWED`: Đơn vị đã được con người kiểm tra, chỉnh sửa và nhập lại qua TSV (`origin=manual`).
+- `OBSOLETE`: Đơn vị không còn tồn tại trong kịch bản game gốc sau khi chạy lại `extract`.
+
+Biểu đồ trạng thái Mermaid của đơn vị dịch:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: extract từ .rpy / import tệp mới
+
+    PENDING --> TRANSLATED: Dịch thành công qua LLM / TM khớp chính xác / Seed UI
+    PENDING --> QA_FLAGGED: Dịch thành công nhưng vi phạm cờ QA (tỷ lệ độ dài, rò rỉ ngôn ngữ, glossary)
+    PENDING --> FAILED: Lỗi giải mã markup / timeout LLM / cú pháp hỏng không thể hồi phục
+
+    FAILED --> PENDING: Retry qua cờ --retry-failed
+    QA_FLAGGED --> PENDING: Reset và dịch lại qua cờ --retry-flagged
+
+    TRANSLATED --> REVIEWED: Người dịch duyệt/chỉnh sửa trong TSV và import (origin=manual)
+    QA_FLAGGED --> REVIEWED: Người dịch xác nhận/sửa lỗi trong TSV và import
+
+    PENDING --> OBSOLETE: Dòng gốc bị xoá hoặc thay đổi trong game update khi extract lại
+    TRANSLATED --> OBSOLETE: Kịch bản game thay đổi, dòng dịch cũ không còn vị trí
+    QA_FLAGGED --> OBSOLETE: Dòng bị xoá khỏi kịch bản gốc
+    FAILED --> OBSOLETE: Dòng bị xoá khỏi kịch bản gốc
+    REVIEWED --> OBSOLETE: Dòng bị xoá khỏi kịch bản gốc
+
+    OBSOLETE --> [*]
+```
 
 ---
 
@@ -164,9 +313,9 @@ docs/DESIGN.md
 - `import` chỉ nhận dòng đã đổi, đánh `origin=manual`, chạy lại mask/validate, **đồng bộ số thứ tự placeholder** giữa nguồn và bản sửa. Bản sửa tay cũng đưa vào TM.
 
 ### 5.6 `apply` — ghi ra game
-1. Backup `game/tl/vietnamese/` vào `.vitrans/backup/<timestamp>/`.
+1. Backup `game/tl/vietnamese/` vào `.renslate/backup/<timestamp>/`.
 2. Sinh `.rpy` theo từng file nguồn; escape lại chuỗi (`\`, `"`, `\n`), bảo vệ ngoặc lẻ.
-3. Thêm file `vitrans_setup.rpy`: font hỗ trợ tiếng Việt cho ngôn ngữ `vietnamese`, đặt lựa chọn ngôn ngữ trong menu Preferences.
+3. Thêm file `renslate_setup.rpy`: font hỗ trợ tiếng Việt cho ngôn ngữ `vietnamese`, đặt lựa chọn ngôn ngữ trong menu Preferences.
 4. Kiểm tra cú pháp nhanh (cân ngoặc, thụt lề) trước khi hoàn tất.
 
 ---
@@ -290,7 +439,7 @@ Giai đoạn M1 hiện thực hoá phần "đọc – lưu – ghi" của pipeli
 - Đầu vào duy nhất là các tệp `game/tl/<ngôn_ngữ>/**/*.rpy` do Ren'Py sinh bằng `renpy translate <ngôn_ngữ> --no-todo`. Lệnh `generate` gọi SDK (`renpy.sh` hoặc `renpy.exe`) để sinh khung; định danh dòng thoại (hash) do chính Ren'Py tạo nên luôn khớp với game. Chế độ tự quét `.rpy` gốc (mục 5.1, bước 1) hoãn lại, vì SDK đã có sẵn.
 - `apply` ghi **tại chỗ** vào chính các tệp đó: chỉ thay đúng dòng đích của từng vị trí ghi (dòng lời thoại hoặc dòng `new`), mọi byte khác giữ nguyên, kể cả BOM và kiểu xuống dòng. Chạy `extract` rồi `apply` khi chưa có bản dịch nào không làm thay đổi tệp nào.
 - Mỗi vị trí ghi có `fingerprint` gắn dòng neo (dòng `translate …:` hoặc dòng `old`) với dòng đích. Tệp đã bị sửa kể từ lần `extract` gần nhất làm `apply` dừng toàn bộ trước khi ghi bất kỳ tệp nào.
-- Trước khi ghi, `apply` kiểm tra markup (`[`/`{` chưa đóng) của mọi bản dịch; một lỗi là dừng toàn bộ. Tệp gốc được sao lưu vào `.vitrans/backup/<UTC>/` và được thay bằng ghi nguyên tử.
+- Trước khi ghi, `apply` kiểm tra markup (`[`/`{` chưa đóng) của mọi bản dịch; một lỗi là dừng toàn bộ. Tệp gốc được sao lưu vào `.renslate/backup/<UTC>/` và được thay bằng ghi nguyên tử.
 
 ### A.2 Mô hình dữ liệu (lược đồ v1)
 - Bảng `units` (đơn vị dịch) tách khỏi bảng `slots` (vị trí ghi trong tệp), nên một chuỗi UI xuất hiện ở nhiều tệp chỉ dịch một lần (mục 4.2). Các bảng `tm`, `glossary`, `characters`, `scenes`, `batches` sẽ được thêm bằng các migration ở M2–M3.
@@ -305,7 +454,7 @@ Giai đoạn M1 hiện thực hoá phần "đọc – lưu – ghi" của pipeli
 - `]` và `}` đứng lẻ là hợp lệ trong Ren'Py nên không bị coi là lỗi; chỉ `[` và `{` chưa đóng bị từ chối.
 
 ### A.4 Cấu hình (mục 8)
-- Cấu hình nằm ở `.vitrans/config.json` trong thư mục dự án Ren'Py (bỏ `project_dir`); thêm `tl_dir` (mặc định `game/tl`) và `sdk` (đường dẫn Ren'Py SDK). Khoá không biết bị từ chối để bắt lỗi gõ sai. Các mục `llm`, `batch`, `tm`, `qa`, `style` đã được định nghĩa và kiểm tra sẵn, được dùng từ M2.
+- Cấu hình nằm ở `.renslate/config.json` trong thư mục dự án Ren'Py (bỏ `project_dir`); thêm `tl_dir` (mặc định `game/tl`) và `sdk` (đường dẫn Ren'Py SDK). Khoá không biết bị từ chối để bắt lỗi gõ sai. Các mục `llm`, `batch`, `tm`, `qa`, `style` đã được định nghĩa và kiểm tra sẵn, được dùng từ M2.
 
 ### A.5 Giới hạn đã biết của M1
 - Chưa hỗ trợ lời thoại dùng nháy đơn, nháy ba hoặc tiền tố `r`: dòng bị bỏ qua và báo cảnh báo `unsupported_syntax`.

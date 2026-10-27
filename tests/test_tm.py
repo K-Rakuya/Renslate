@@ -1,4 +1,4 @@
-"""Tests for vitrans.tm."""
+"""Tests for renslate.tm."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from vitrans.db import Database
-from vitrans.models import Origin
-from vitrans.tm import TranslationMemory, normalize_source
+from renslate.db import Database
+from renslate.models import Origin
+from renslate.tm import TranslationMemory, normalize_source
 
 
 @pytest.fixture

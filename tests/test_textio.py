@@ -1,10 +1,10 @@
-"""Tests for vitrans.textio."""
+"""Tests for renslate.textio."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from vitrans.textio import TextFile, read_text_file, write_atomic
+from renslate.textio import TextFile, read_text_file, write_atomic
 
 
 def test_write_atomic_on_new_and_existing_file(tmp_path: Path) -> None:

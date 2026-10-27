@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vitrans"
+name = "renslate"
 dynamic = ["version"]
 description = "Local-LLM translation toolkit for Ren'Py games."
 readme = "README.md"
@@ -22,16 +22,16 @@ classifiers = [
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
-vitrans = "vitrans.cli:main"
+renslate = "renslate.cli:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "vitrans.__version__" }
+version = { attr = "renslate.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-vitrans = ["py.typed"]
+renslate = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -50,4 +50,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PTH", "RUF"]
 strict = true
 python_version = "3.10"
 mypy_path = "src"
-packages = ["vitrans"]
+packages = ["renslate"]

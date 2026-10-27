@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from vitrans.project import Project
+from renslate.project import Project
 
 
 def read_tree(project: Project) -> dict[str, bytes]:

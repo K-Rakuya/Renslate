@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from renslate.db import Database
+from renslate.errors import ApplyError, ProjectError
+from renslate.extract import FLAG_MARKUP_INVALID, FLAG_SOURCE_CHANGED, extract
+from renslate.models import Origin, Status
+from renslate.parser import Severity, string_uid
+from renslate.project import Project
+from renslate.writer import apply_translations
 from tests.helpers import read_tree
-from vitrans.db import Database
-from vitrans.errors import ApplyError, ProjectError
-from vitrans.extract import FLAG_MARKUP_INVALID, FLAG_SOURCE_CHANGED, extract
-from vitrans.models import Origin, Status
-from vitrans.parser import Severity, string_uid
-from vitrans.project import Project
-from vitrans.writer import apply_translations
 
 SCRIPT = "game/tl/vietnamese/script.rpy"
 SCREENS = "game/tl/vietnamese/screens.rpy"
@@ -157,7 +157,7 @@ def test_missing_file_aborts_apply(project: Project, database: Database) -> None
     extract(project, database)
     set_target(database, string_uid("Quit"), "Thoát")
     (project.root / SCREENS).unlink()
-    with pytest.raises(ApplyError, match="vitrans extract"):
+    with pytest.raises(ApplyError, match="renslate extract"):
         apply_translations(project, database)
 
 
@@ -265,7 +265,7 @@ def test_bad_encoding_is_reported_and_skipped(project: Project, database: Databa
 def test_missing_translation_directory(tmp_path: Path) -> None:
     (tmp_path / "game").mkdir()
     project = Project.create(tmp_path)
-    with project.open_db() as database, pytest.raises(ProjectError, match="vitrans generate"):
+    with project.open_db() as database, pytest.raises(ProjectError, match="renslate generate"):
         extract(project, database)
 
 

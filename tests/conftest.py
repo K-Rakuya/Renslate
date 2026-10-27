@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from vitrans.db import Database
-from vitrans.project import Project
+from renslate.db import Database
+from renslate.project import Project
 
 DATA_DIR = Path(__file__).parent / "data"
 

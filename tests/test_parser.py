@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from vitrans.models import UnitKind
-from vitrans.parser import (
+from renslate.models import UnitKind
+from renslate.parser import (
     ParsedUnit,
     Severity,
     TranslationScanner,
@@ -13,7 +13,7 @@ from vitrans.parser import (
     parse_string_line,
     string_uid,
 )
-from vitrans.textio import TextFile
+from renslate.textio import TextFile
 
 DATA = Path(__file__).parent / "data" / "tl" / "vietnamese"
 
