@@ -39,6 +39,7 @@ from renslate.core.models import (
     QAIssue,
     RelationshipEdge,
     RelationshipKind,
+    SceneMacroContext,
     SceneSummary,
     Slot,
     Status,
@@ -78,6 +79,7 @@ __all__ = [
     "RelationshipKind",
     # Errors
     "RenslateError",
+    "SceneMacroContext",
     "SceneSummary",
     "SdkError",
     "Slot",

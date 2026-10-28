@@ -26,10 +26,13 @@ from renslate.core.models import (
     GlossaryEntry,
     RelationshipEdge,
     RelationshipKind,
+    SceneMacroContext,
     SceneSummary,
+    Unit,
     UnitKind,
 )
 from renslate.core.project import Project
+from renslate.engine.context import infer_scene_cues
 from renslate.engine.glossary import (
     Glossary,
     _make_plural_aliases,
@@ -45,6 +48,7 @@ __all__ = [
     "StylometricSummary",
     "bootstrap_characters_with_llm",
     "extract_character_definitions",
+    "extract_scene_macro_contexts",
     "extract_stylometrics",
     "infer_character_gender_nlp",
     "infer_character_role_nlp",
@@ -399,52 +403,116 @@ def extract_character_definitions(project_dir: Path) -> dict[str, str]:
     return characters
 
 
-def segment_scenes(db: Database) -> list[SceneSummary]:
-    """Group dialogue units into coherent scenes based on labels and sequence continuity."""
-    units = db.all_units()
-    dialogues = [u for u in units if u.kind is UnitKind.DIALOGUE]
+def extract_scene_macro_contexts(
+    db: Database,
+    units: Sequence[Unit] | None = None,
+) -> list[SceneMacroContext]:
+    """Group dialogue units into rich hierarchical SceneMacroContext objects.
+
+    Extracts scene boundaries by label changes or sequence gaps, inferring
+    location, atmosphere, active characters, temporal anchors, and script file.
+    """
+    all_u = db.all_units() if units is None else list(units)
+    dialogues = [u for u in all_u if u.kind is UnitKind.DIALOGUE]
     if not dialogues:
         return []
 
-    scenes: list[SceneSummary] = []
+    macros: list[SceneMacroContext] = []
     current_label = dialogues[0].label or "prologue"
-    first_seq = dialogues[0].seq
-    last_seq = dialogues[0].seq
+    scene_dialogues: list[Unit] = [dialogues[0]]
     scene_idx = 1
+
+    def _build_macro(label: str, group: list[Unit], idx: int) -> SceneMacroContext:
+        first_seq = group[0].seq
+        last_seq = group[-1].seq
+        scene_id = f"scene_{idx}_{label}"
+
+        speakers: list[str] = []
+        for u in group:
+            if (
+                u.speaker
+                and u.speaker.strip()
+                and u.speaker.strip().lower() not in _NON_INTERACTION_TAGS
+            ):
+                spk = u.speaker.strip()
+                if spk not in speakers:
+                    speakers.append(spk)
+
+        file_path = ""
+        for u in group:
+            if u.ref:
+                file_path = u.ref.split(":", 1)[0].strip()
+                if file_path:
+                    break
+
+        loc, atmos = infer_scene_cues(label)
+
+        label_lower = label.lower()
+        temporal = ""
+        if "midnight" in label_lower:
+            temporal = "Nửa đêm (Midnight)"
+        elif "night" in label_lower:
+            temporal = "Đêm khuya (Night)"
+        elif "sunset" in label_lower or "dusk" in label_lower:
+            temporal = "Hoàng hôn (Sunset/Dusk)"
+        elif "dawn" in label_lower:
+            temporal = "Bình minh (Dawn)"
+        elif "morning" in label_lower:
+            temporal = "Buổi sáng (Morning)"
+
+        summary_parts = [f"Cảnh '{label}'"]
+        if loc:
+            summary_parts.append(f"tại {loc}")
+        if speakers:
+            summary_parts.append(f"với {', '.join(speakers)}")
+        summary_parts.append(f"(từ dòng {first_seq} đến {last_seq})")
+        summary_text = " ".join(summary_parts)
+
+        return SceneMacroContext(
+            scene_id=scene_id,
+            label=label,
+            file=file_path,
+            summary=summary_text,
+            location=loc,
+            atmosphere=atmos,
+            active_characters=tuple(speakers),
+            temporal_anchor=temporal,
+            first_seq=first_seq,
+            last_seq=last_seq,
+            metadata={"dialogue_count": len(group)},
+        )
 
     for i in range(1, len(dialogues)):
         u = dialogues[i]
         label = u.label or current_label
-        # New scene if label changes or sequence jump > 50
+        last_seq = scene_dialogues[-1].seq
         if label != current_label or (u.seq - last_seq > 50):
-            scene_id = f"scene_{scene_idx}_{current_label}"
-            scenes.append(
-                SceneSummary(
-                    scene_id=scene_id,
-                    label=current_label,
-                    first_seq=first_seq,
-                    last_seq=last_seq,
-                    summary=f"Cảnh '{current_label}' (từ dòng {first_seq} đến {last_seq})",
-                )
-            )
+            macros.append(_build_macro(current_label, scene_dialogues, scene_idx))
             scene_idx += 1
             current_label = label
-            first_seq = u.seq
-        last_seq = u.seq
+            scene_dialogues = [u]
+        else:
+            scene_dialogues.append(u)
 
-    # Final scene
-    scene_id = f"scene_{scene_idx}_{current_label}"
-    scenes.append(
+    if scene_dialogues:
+        macros.append(_build_macro(current_label, scene_dialogues, scene_idx))
+
+    return macros
+
+
+def segment_scenes(db: Database) -> list[SceneSummary]:
+    """Group dialogue units into coherent scenes based on labels and sequence continuity."""
+    macros = extract_scene_macro_contexts(db)
+    return [
         SceneSummary(
-            scene_id=scene_id,
-            label=current_label,
-            first_seq=first_seq,
-            last_seq=last_seq,
-            summary=f"Cảnh '{current_label}' (từ dòng {first_seq} đến {last_seq})",
+            scene_id=m.scene_id,
+            label=m.label,
+            first_seq=m.first_seq,
+            last_seq=m.last_seq,
+            summary=f"Cảnh '{m.label}' (từ dòng {m.first_seq} đến {m.last_seq})",
         )
-    )
-
-    return scenes
+        for m in macros
+    ]
 
 
 def is_collective_entity(tag: str, display_name: str = "") -> bool:

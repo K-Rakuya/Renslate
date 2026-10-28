@@ -224,6 +224,21 @@ class RelationshipGraph:
         sorted_partners = sorted(partners.items(), key=lambda kv: kv[1], reverse=True)
         return sorted_partners[:limit]
 
+    @staticmethod
+    def _backtrack_path(
+        parent_map: dict[str, tuple[str, RelationshipEdge]],
+        start: str,
+        target: str,
+    ) -> list[RelationshipEdge]:
+        path: list[RelationshipEdge] = []
+        curr = target
+        while curr != start:
+            prev, edge = parent_map[curr]
+            path.append(edge)
+            curr = prev
+        path.reverse()
+        return path
+
     def find_path(
         self,
         src: str,
@@ -239,26 +254,28 @@ class RelationshipGraph:
         if max_depth is not None and max_depth <= 0:
             return []
 
-        queue: deque[tuple[str, list[RelationshipEdge]]] = deque([(s, [])])
-        visited: set[str] = {s}
+        queue: deque[tuple[str, int]] = deque([(s, 0)])
+        parent_map: dict[str, tuple[str, RelationshipEdge]] = {}
 
         while queue:
-            curr, path = queue.popleft()
-            if curr == t:
-                return path
-            if max_depth is not None and len(path) >= max_depth:
+            curr, depth = queue.popleft()
+            if max_depth is not None and depth >= max_depth:
                 continue
 
             for neighbor, edge in self._out_edges.get(curr, {}).items():
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, [*path, edge]))
+                if neighbor not in parent_map and neighbor != s:
+                    parent_map[neighbor] = (curr, edge)
+                    if neighbor == t:
+                        return self._backtrack_path(parent_map, s, t)
+                    queue.append((neighbor, depth + 1))
 
             if not directed:
                 for neighbor, edge in self._in_edges.get(curr, {}).items():
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append((neighbor, [*path, edge]))
+                    if neighbor not in parent_map and neighbor != s:
+                        parent_map[neighbor] = (curr, edge)
+                        if neighbor == t:
+                            return self._backtrack_path(parent_map, s, t)
+                        queue.append((neighbor, depth + 1))
 
         return []
 

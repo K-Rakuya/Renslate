@@ -5,11 +5,17 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from renslate.core.config import Config
-from renslate.core.models import CharacterProfile, GlossaryEntry, SceneSummary, Unit
+from renslate.core.models import (
+    CharacterProfile,
+    GlossaryEntry,
+    SceneMacroContext,
+    SceneSummary,
+    Unit,
+)
 from renslate.engine.tm import FuzzyMatch
 
 if TYPE_CHECKING:
@@ -656,6 +662,30 @@ class LookbackItem:
     target: str
 
 
+@dataclass(frozen=True, slots=True)
+class ContextBundle:
+    """Encapsulates all contextual domain assets assembled for a translation prompt.
+
+    Provides a unified container for glossary matches, character profiles, scene context,
+    lookback conversation history, fuzzy matches, relationship graph, and interlocutor resolver.
+    """
+
+    glossary_matches: Sequence[GlossaryEntry] = ()
+    characters: dict[str, CharacterProfile] = field(default_factory=dict)
+    scene_summary: SceneSummary | None = None
+    scene_macro: SceneMacroContext | None = None
+    lookback: Sequence[LookbackItem] = ()
+    fuzzy_matches: dict[str, list[FuzzyMatch]] = field(default_factory=dict)
+    graph: RelationshipGraph | None = None
+    resolver: Any | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.glossary_matches, tuple):
+            object.__setattr__(self, "glossary_matches", tuple(self.glossary_matches))
+        if not isinstance(self.lookback, tuple):
+            object.__setattr__(self, "lookback", tuple(self.lookback))
+
+
 class ContextBuilder:
     """Builds optimized prompts respecting token budgets and context priorities."""
 
@@ -739,8 +769,23 @@ class ContextBuilder:
         fuzzy_matches: dict[str, list[FuzzyMatch]] | None = None,
         graph: RelationshipGraph | None = None,
         resolver: Any | None = None,
+        scene_macro: SceneMacroContext | None = None,
+        bundle: ContextBundle | None = None,
     ) -> str:
         """Assemble the user prompt prioritizing critical context within token limits."""
+        if bundle is not None:
+            if not glossary_matches and bundle.glossary_matches:
+                glossary_matches = bundle.glossary_matches
+            if characters is None and bundle.characters:
+                characters = bundle.characters
+            scene_summary = scene_summary or bundle.scene_summary
+            scene_macro = scene_macro or bundle.scene_macro
+            if not lookback and bundle.lookback:
+                lookback = bundle.lookback
+            fuzzy_matches = fuzzy_matches if fuzzy_matches is not None else bundle.fuzzy_matches
+            graph = graph or bundle.graph
+            resolver = resolver or bundle.resolver
+
         characters = characters or {}
         fuzzy_matches = fuzzy_matches or {}
 
@@ -991,28 +1036,37 @@ class ContextBuilder:
                 sections.append(ch_block)
                 available_budget -= tokens
 
+        resolved_macro: SceneMacroContext | None = scene_macro
+        if resolved_macro is None and scene_summary is not None:
+            if isinstance(scene_summary, SceneMacroContext):
+                resolved_macro = scene_summary
+            else:
+                loc = getattr(scene_summary, "location", "")
+                atmos = getattr(scene_summary, "atmosphere", "")
+                resolved_macro = SceneMacroContext(
+                    scene_id=scene_summary.scene_id,
+                    label=scene_summary.label,
+                    first_seq=scene_summary.first_seq,
+                    last_seq=scene_summary.last_seq,
+                    summary=scene_summary.summary,
+                    location=loc,
+                    atmosphere=atmos,
+                )
+
         if (
-            scene_summary
-            and (scene_summary.summary or scene_summary.label)
+            resolved_macro is not None
+            and (resolved_macro.summary or resolved_macro.label or not resolved_macro.is_empty())
             and available_budget > 80
         ):
-            macro_lines = ["BỐI CẢNH PHÂN CẢNH & TÓM TẮT CẢNH HIỆN TẠI (SCENE MACRO CONTEXT):"]
-            if scene_summary.label:
-                macro_lines.append(f"- Phân cảnh (Scene Label): {scene_summary.label}")
-            loc = getattr(scene_summary, "location", "")
-            atmos = getattr(scene_summary, "atmosphere", "")
-            if (not loc or not atmos) and scene_summary.label:
-                inferred_loc, inferred_atmos = infer_scene_cues(scene_summary.label)
+            loc = resolved_macro.location
+            atmos = resolved_macro.atmosphere
+            if (not loc or not atmos) and resolved_macro.label:
+                inferred_loc, inferred_atmos = infer_scene_cues(resolved_macro.label)
                 loc = loc or inferred_loc
                 atmos = atmos or inferred_atmos
-            if loc:
-                macro_lines.append(f"- Địa điểm (Location): {loc}")
-            if atmos:
-                macro_lines.append(f"- Không khí / Cảm xúc (Atmosphere): {atmos}")
-            if scene_summary.summary:
-                macro_lines.append(f"- Tóm tắt tình huống (Summary): {scene_summary.summary}")
+                resolved_macro = resolved_macro.with_updates(location=loc, atmosphere=atmos)
 
-            sc_block = "\n".join(macro_lines)
+            sc_block = resolved_macro.format_prompt_header()
             tokens = estimate_tokens(sc_block)
             if tokens <= available_budget:
                 sections.append(sc_block)
@@ -1046,6 +1100,7 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "QUOTED_RULES",
     "ContextBuilder",
+    "ContextBundle",
     "InterlocutorResolver",
     "LookbackItem",
     "ResolvedInterlocutor",
