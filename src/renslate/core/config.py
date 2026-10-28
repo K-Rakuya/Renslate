@@ -26,6 +26,7 @@ class LLMConfig:
     model: str = "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
     n_ctx: int = _bounded(6144, 1024)
     temperature: float = _bounded(0.25, 0.0, 2.0)
+    min_p: float = _bounded(0.05, 0.0, 1.0)
     timeout_s: float = _bounded(600.0, 1.0)
     max_retries: int = _bounded(3, 0, 20)
     grammar: str | None = None

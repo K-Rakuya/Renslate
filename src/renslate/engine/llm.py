@@ -409,6 +409,7 @@ class LLMClient:
         user_prompt: str,
         *,
         temperature: float | None = None,
+        min_p: float | None = None,
         max_tokens: int | None = None,
         schema: dict[str, Any] | None = None,
         json_schema: dict[str, Any] | None = None,
@@ -418,7 +419,7 @@ class LLMClient:
         """Send chat completion request expecting a JSON object output.
 
         Supports structured JSON schema enforcement, GBNF grammar decoding,
-        and persistent HTTP Keep-Alive.
+        min-p dynamic sampling, and persistent HTTP Keep-Alive.
         Returns (parsed_dict, prompt_tokens, completion_tokens).
         """
         effective_schema = (
@@ -436,6 +437,7 @@ class LLMClient:
             ],
             "temperature": self.config.temperature if temperature is None else temperature,
             "top_p": 0.9,
+            "min_p": self.config.min_p if min_p is None else min_p,
             "repeat_penalty": 1.15,
             "stop": ["\n\n//", "\n//", "<|im_end|>", "<|endoftext|>"],
         }

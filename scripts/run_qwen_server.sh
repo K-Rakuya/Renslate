@@ -38,6 +38,7 @@ PORT="${RENSLATE_PORT:-8080}"
 CTX_SIZE="${RENSLATE_CTX:-6144}"
 SLOTS="${RENSLATE_SLOTS:-1}"
 THREADS="${RENSLATE_THREADS:-4}"                # 4 physical cores saturate dual-channel DDR5 without thermal throttling
+THREADS_BATCH="${RENSLATE_THREADS_BATCH:-8}"    # 8 cores for compute-bound prompt prefill
 BATCH="${RENSLATE_BATCH:-1024}"
 UBATCH="${RENSLATE_UBATCH:-512}"
 VRAM_MARGIN_MIB="${RENSLATE_VRAM_MARGIN:-512}"  # Reserve headroom for KDE/Wayland compositor
@@ -117,13 +118,12 @@ while IFS=, read -r cpu core; do
     fi
 done < <(lscpu -p=CPU,CORE 2>/dev/null)
 
-# CPU_ARGS=(-t "$THREADS" -tb "$THREADS")
-CPU_ARGS=(-t "$THREADS" -tb 12)
+CPU_ARGS=(-t "$THREADS" -tb "$THREADS_BATCH")
 if (( CPU_MASK != 0 )); then
     CPU_MASK_HEX=$(printf '%x' "$CPU_MASK")
     CPU_ARGS+=(--cpu-mask "0x${CPU_MASK_HEX}" --cpu-mask-batch "0x${CPU_MASK_HEX}" --cpu-strict 1 --cpu-strict-batch 1)
     picked_cpus_str="${picked_cpus[*]}"
-    msg_ok "CPU pinning    : ${THREADS} threads pinned to physical cores [${picked_cpus_str}] (Mask: 0x${CPU_MASK_HEX})"
+    msg_ok "CPU pinning    : ${THREADS} gen / ${THREADS_BATCH} prefill threads pinned [${picked_cpus_str}] (Mask: 0x${CPU_MASK_HEX})"
 else
     msg_warn "Could not read CPU core topology; running without core pinning."
 fi
@@ -150,11 +150,15 @@ CMD=(
     -c "$CTX_SIZE" -np "$SLOTS"
     -b "$BATCH" -ub "$UBATCH"
     -fa on
-    -ctk q8_0 -ctv q8_0
+    -ctk q4_1 -ctv q8_0
     -fit on -fitt "$VRAM_MARGIN_MIB"
     -lm "$LOAD_MODE" -lzm off
     "${CPU_ARGS[@]}"
     --poll 0
+    --spec-type ngram-simple
+    --spec-ngram-simple-size-n 24
+    --spec-ngram-simple-size-m 4
+    --spec-ngram-simple-min-hits 1
     -cram "$PROMPT_CACHE_MIB"
     -ctxcp "$CTX_CHECKPOINTS"
     # --no-warmup
@@ -164,7 +168,7 @@ CMD=(
     --reasoning-budget 0
     --skip-chat-parsing
     -n "$MAX_TOKENS"
-    --temp "$TEMP" --top-k 20 --top-p 0.8
+    --temp "$TEMP" --top-k 20 --top-p 0.8 --min-p 0.05
     --sleep-idle-seconds "$SLEEP_IDLE"
 )
 (( ${#DEV_ARGS[@]} )) && CMD+=("${DEV_ARGS[@]}")

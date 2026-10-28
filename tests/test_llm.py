@@ -167,6 +167,7 @@ def test_llm_client_with_schema() -> None:
         req_data = captured_requests[0].data
         assert isinstance(req_data, bytes)
         payload = json.loads(req_data.decode("utf-8"))
+        assert payload["min_p"] == 0.05
         assert payload["response_format"]["type"] == "json_schema"
         assert payload["response_format"]["json_schema"]["schema"] == schema
 
