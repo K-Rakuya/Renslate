@@ -40,3 +40,32 @@ def test_text_file_eol_and_bom_preservation(tmp_path: Path) -> None:
     assert tf_lf.bom is False
     assert tf_lf.eol == "\n"
     assert tf_lf.to_bytes() == lf_content
+
+
+def test_normalize_nfc_ascii_fast_path() -> None:
+    from renslate.core.textio import normalize_nfc as core_normalize_nfc
+    from renslate.textio import normalize_nfc
+
+    assert normalize_nfc is core_normalize_nfc
+
+    ascii_str = "Hello [player]! {b}Welcome{/b}"
+    assert normalize_nfc(ascii_str) is ascii_str
+    assert normalize_nfc("") == ""
+
+    ctrl_str = "\x00\t\r\n"
+    assert normalize_nfc(ctrl_str) is ctrl_str
+
+
+def test_normalize_nfc_decomposed_unicode() -> None:
+    import unicodedata
+
+    from renslate.textio import normalize_nfc
+
+    nfd_text = unicodedata.normalize("NFD", "Tiếng Việt chuẩn xác")
+    assert unicodedata.is_normalized("NFC", nfd_text) is False
+    nfc_text = normalize_nfc(nfd_text)
+    assert nfc_text == "Tiếng Việt chuẩn xác"
+    assert unicodedata.is_normalized("NFC", nfc_text) is True
+
+    cjk = "日本語テキスト"
+    assert normalize_nfc(cjk) == cjk

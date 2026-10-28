@@ -15,6 +15,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from renslate.core.errors import MarkupError
+from renslate.core.textio import normalize_nfc
 
 OPEN_MARK = "⟦"
 CLOSE_MARK = "⟧"
@@ -22,6 +23,18 @@ CLOSE_MARK = "⟧"
 _PLACEHOLDER = re.compile(rf"{OPEN_MARK}(/?)([A-Z][0-9]+){CLOSE_MARK}")
 _PERCENT_VARIABLE = re.compile(r"%\([A-Za-z_]\w*\)[sdifrg]")
 _TAG_NAME = re.compile(r"\{/?(#|[A-Za-z0-9_]+)")
+
+_REPAIR_DELIMITER_OPEN = r"[\[\{\u27e6\u3010\u3014\uff3b]"
+_REPAIR_DELIMITER_CLOSE = r"[\]\}\u27e7\u3011\u3015\uff3d]"
+_REPAIR_PLACEHOLDER_RE = re.compile(
+    rf"({_REPAIR_DELIMITER_OPEN})\s*(/?)\s*([A-Za-z0-9_]+)\s*({_REPAIR_DELIMITER_CLOSE})"
+)
+_OUTER_CURLY_RE = re.compile(r"^(?:\{[^\}]+\})+\s*(⟦.+?⟧[\s\S]*?)\s*(?:\{[^\}]+\})+$")
+_LEADING_TOKEN_CLUSTER_RE = re.compile(rf"^(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+")
+_TRAILING_TOKEN_CLUSTER_RE = re.compile(rf"(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+$")
+_TOKEN_CLUSTER_RE = re.compile(rf"{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK}")
+_PREFIX_KEY_RE = re.compile(rf"^{OPEN_MARK}([A-Za-z0-9]+){CLOSE_MARK}")
+_SUFFIX_KEY_RE = re.compile(rf"{OPEN_MARK}/([A-Za-z0-9]+){CLOSE_MARK}$")
 
 
 class TokenKind(enum.Enum):
@@ -247,6 +260,7 @@ def _pair_tags(tokens: list[Token]) -> dict[int, int]:
 
 def mask(text: str) -> MaskedText:
     """Replace markup in text with placeholders; raise MarkupError if text is malformed."""
+    text = normalize_nfc(text)
     parts = tokenize(text)
     tokens = [part for part in parts if isinstance(part, Token)]
     pairs = _pair_tags(tokens)
@@ -295,32 +309,26 @@ def auto_repair_placeholders(masked: MaskedText, translated: str) -> str:
     if not masked.tokens:
         return translated
 
-    result = translated
+    result = normalize_nfc(translated)
 
     if "⟦" in result and ("{" in result or "}" in result):
-        outer_curly = re.match(r"^(?:\{[^\}]+\})+\s*(⟦.+?⟧[\s\S]*?)\s*(?:\{[^\}]+\})+$", result)
+        outer_curly = _OUTER_CURLY_RE.match(result)
         if outer_curly:
             result = outer_curly.group(1).strip()
 
-    result = re.sub(
-        rf"{OPEN_MARK}\s*(/?)\s*([A-Za-z][0-9]+)\s*{CLOSE_MARK}",
-        rf"{OPEN_MARK}\1\2{CLOSE_MARK}",
-        result,
-    )
+    valid_tokens: set[str] = {token.key for token in masked.tokens}
+    valid_tokens.update(f"/{token.key}" for token in masked.tokens if token.close_raw is not None)
 
-    for token in masked.tokens:
-        k = token.key
-        result = re.sub(
-            rf"[\[\{{\u3010\u3014\uff3b]\s*{re.escape(k)}\s*[\]\}}\u3011\u3015\uff3d]",
-            f"{OPEN_MARK}{k}{CLOSE_MARK}",
-            result,
-        )
-        if token.close_raw is not None:
-            result = re.sub(
-                rf"[\[\{{\u3010\u3014\uff3b]\s*/{re.escape(k)}\s*[\]\}}\u3011\u3015\uff3d]",
-                f"{OPEN_MARK}/{k}{CLOSE_MARK}",
-                result,
-            )
+    def _replace_placeholder(match: re.Match[str]) -> str:
+        open_d, slash, key, close_d = match.groups()
+        candidate = f"{slash}{key}"
+        if candidate in valid_tokens:
+            return f"{OPEN_MARK}{candidate}{CLOSE_MARK}"
+        if open_d == OPEN_MARK and close_d == CLOSE_MARK:
+            return f"{OPEN_MARK}{candidate}{CLOSE_MARK}"
+        return match.group(0)
+
+    result = _REPAIR_PLACEHOLDER_RE.sub(_replace_placeholder, result)
 
     for token in masked.tokens:
         if token.kind is TokenKind.NEWLINE:
@@ -343,23 +351,23 @@ def auto_repair_placeholders(masked: MaskedText, translated: str) -> str:
     has_raw_curly = ("{" in result or "}" in result) and (OPEN_MARK not in result)
     if not has_raw_curly:
         # Restore leading standalone/opening token sequence if partially or fully dropped
-        m_lead = re.match(rf"^(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+", masked.text.lstrip())
+        m_lead = _LEADING_TOKEN_CLUSTER_RE.match(masked.text.lstrip())
         if m_lead:
-            leading_tokens = re.findall(rf"{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK}", m_lead.group(0))
-            m_cur_lead = re.match(rf"^(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+", result.lstrip())
+            leading_tokens = _TOKEN_CLUSTER_RE.findall(m_lead.group(0))
+            m_cur_lead = _LEADING_TOKEN_CLUSTER_RE.match(result.lstrip())
             cur_lead_str = m_cur_lead.group(0) if m_cur_lead else ""
-            cur_lead_tokens = re.findall(rf"{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK}", cur_lead_str)
+            cur_lead_tokens = _TOKEN_CLUSTER_RE.findall(cur_lead_str)
             if any(tok not in cur_lead_tokens for tok in leading_tokens):
                 result = result[len(cur_lead_str) :]
                 result = "".join(leading_tokens) + result
 
         # Restore trailing standalone/closing token sequence if partially or fully dropped
-        m_trail = re.search(rf"(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+$", masked.text.rstrip())
+        m_trail = _TRAILING_TOKEN_CLUSTER_RE.search(masked.text.rstrip())
         if m_trail:
-            trailing_tokens = re.findall(rf"{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK}", m_trail.group(0))
-            m_cur_trail = re.search(rf"(?:{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK})+$", result.rstrip())
+            trailing_tokens = _TOKEN_CLUSTER_RE.findall(m_trail.group(0))
+            m_cur_trail = _TRAILING_TOKEN_CLUSTER_RE.search(result.rstrip())
             cur_trail_str = m_cur_trail.group(0) if m_cur_trail else ""
-            cur_trail_tokens = re.findall(rf"{OPEN_MARK}[A-Za-z0-9/]+{CLOSE_MARK}", cur_trail_str)
+            cur_trail_tokens = _TOKEN_CLUSTER_RE.findall(cur_trail_str)
             if any(tok not in cur_trail_tokens for tok in trailing_tokens):
                 result = result[: len(result) - len(cur_trail_str)]
                 result = result + "".join(trailing_tokens)
@@ -377,7 +385,7 @@ def auto_repair_placeholders(masked: MaskedText, translated: str) -> str:
         token_by_key = {t.key: t for t in masked.tokens if t.close_raw is not None}
         prefix_keys: list[str] = []
         while idx < len(text_strip):
-            m = re.match(rf"^{OPEN_MARK}([A-Za-z0-9]+){CLOSE_MARK}", text_strip[idx:])
+            m = _PREFIX_KEY_RE.match(text_strip[idx:])
             if not m:
                 break
             k = m.group(1)
@@ -388,7 +396,7 @@ def auto_repair_placeholders(masked: MaskedText, translated: str) -> str:
         suffix_keys: list[str] = []
         s_text = text_strip[idx:].rstrip()
         while s_text:
-            m = re.search(rf"{OPEN_MARK}/([A-Za-z0-9]+){CLOSE_MARK}$", s_text)
+            m = _SUFFIX_KEY_RE.search(s_text)
             if not m:
                 break
             k = m.group(1)
@@ -750,6 +758,7 @@ def reconcile_translation(source: str, target: str) -> tuple[str, list[Placehold
     Supports both synthetic placeholder tokens (e.g. ⟦V1⟧) and natural Ren'Py markup.
     Returns (cleaned_target, issues).
     """
+    target = normalize_nfc(target)
     if OPEN_MARK in target:
         masked = mask(source)
         issues = validate(masked, target)

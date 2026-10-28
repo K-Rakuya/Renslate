@@ -15,11 +15,13 @@ import os
 import pickle
 import re
 import struct
+import threading
+import types
 import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from renslate.renpy.literals import encode_say_text, parse_python_string, quote_python_text
 
@@ -530,11 +532,70 @@ class RpycFile:
         self.path = Path(path)
         self.slots: dict[int, tuple[int, int]] = {}
         self.is_legacy: bool = False
-        self._parse_header()
+        self._fh: BinaryIO | None = None
+        self._lock: threading.Lock = threading.Lock()
+        self._context_depth: int = 0
+        try:
+            self._fh = self.path.open("rb")
+            self._parse_header()
+        except Exception:
+            self.close()
+            raise
+
+    def __enter__(self) -> RpycFile:
+        with self._lock:
+            if self._fh is None or self._fh.closed:
+                self._fh = self.path.open("rb")
+            self._context_depth += 1
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
+        with self._lock:
+            if self._context_depth > 0:
+                self._context_depth -= 1
+            if self._context_depth == 0:
+                self._close_handle_locked()
+
+    def close(self) -> None:
+        """Close underlying file handle if open."""
+        with self._lock:
+            self._context_depth = 0
+            self._close_handle_locked()
+
+    def _close_handle_locked(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            finally:
+                self._fh = None
+
+    def __del__(self) -> None:
+        try:
+            if self._fh is not None and not self._fh.closed:
+                self._fh.close()
+        except Exception:
+            pass
+
+    def _read_bytes(
+        self, offset: int, length: int | None = None, whence: int = os.SEEK_SET
+    ) -> bytes:
+        """Thread-safe read from persistent file handle or fallback transient open."""
+        with self._lock:
+            fh = self._fh
+            if fh is not None and not fh.closed:
+                fh.seek(offset, whence)
+                return fh.read() if length is None else fh.read(length)
+            with self.path.open("rb") as f:
+                f.seek(offset, whence)
+                return f.read() if length is None else f.read(length)
 
     def _parse_header(self) -> None:
-        with self.path.open("rb") as f:
-            header_bytes = f.read(1024)
+        header_bytes = self._read_bytes(0, 1024)
 
         if not header_bytes.startswith(RPYC2_HEADER):
             self.is_legacy = True
@@ -550,27 +611,24 @@ class RpycFile:
 
     def read_slot(self, slot_id: int) -> bytes | None:
         """Read and decompress raw bytes for the given slot id."""
-        with self.path.open("rb") as f:
-            if self.is_legacy:
-                if slot_id != SLOT_STATEMENTS_PRE:
-                    return None
-                f.seek(0)
-                data = f.read()
-                try:
-                    return zlib.decompress(data)
-                except Exception:
-                    return None
-
-            if slot_id not in self.slots:
+        if self.is_legacy:
+            if slot_id != SLOT_STATEMENTS_PRE:
                 return None
-
-            start, length = self.slots[slot_id]
-            f.seek(start)
-            compressed = f.read(length)
             try:
-                return zlib.decompress(compressed)
+                data = self._read_bytes(0)
+                return zlib.decompress(data)
             except Exception:
                 return None
+
+        if slot_id not in self.slots:
+            return None
+
+        start, length = self.slots[slot_id]
+        try:
+            compressed = self._read_bytes(start, length)
+            return zlib.decompress(compressed)
+        except Exception:
+            return None
 
     def read_slots(self) -> dict[int, bytes]:
         """Read and decompress all slots in the file, returning slot_id -> bytes."""
@@ -608,11 +666,12 @@ class RpycFile:
         if self.is_legacy:
             return None
         try:
-            with self.path.open("rb") as f:
-                f.seek(-16, os.SEEK_END)
-                return f.read(16)
+            return self._read_bytes(-16, 16, os.SEEK_END)
         except Exception:
             return None
+
+
+RpycArchive = RpycFile
 
 
 def create_rpyc(slots: dict[int, bytes]) -> bytes:
@@ -852,13 +911,12 @@ def _extract_menu_strings(
 def extract_rpyc_file(rpyc_path: Path | str) -> ExtractedScript:
     """Extract translatable dialogue and UI strings directly from a .rpyc file."""
     path = Path(rpyc_path)
-    rpyc = RpycFile(path)
-
-    # Prefer Slot 2 (post static transforms with TranslateSay & canonical IDs)
-    loaded = rpyc.load_slot(SLOT_STATEMENTS_POST)
-    if loaded is None:
-        # Fall back to Slot 1 (pre-transforms)
-        loaded = rpyc.load_slot(SLOT_STATEMENTS_PRE)
+    with RpycFile(path) as rpyc:
+        # Prefer Slot 2 (post static transforms with TranslateSay & canonical IDs)
+        loaded = rpyc.load_slot(SLOT_STATEMENTS_POST)
+        if loaded is None:
+            # Fall back to Slot 1 (pre-transforms)
+            loaded = rpyc.load_slot(SLOT_STATEMENTS_PRE)
 
     stmts = _unpack_stmts(loaded)
     out = ExtractedScript()
@@ -960,8 +1018,8 @@ def extract_character_definitions_from_rpyc(game_dir: Path | str) -> dict[str, s
 
     for rpyc_path in rpyc_files:
         try:
-            rpyc = RpycFile(rpyc_path)
-            stmts = rpyc.get_slot_1_statements()
+            with RpycFile(rpyc_path) as rpyc:
+                stmts = rpyc.get_slot_1_statements()
             for stmt in _unpack_stmts(stmts):
                 _extract_char_definitions_from_stmt(stmt, characters)
         except Exception:
@@ -1350,11 +1408,11 @@ def decompile_rpyc(rpyc_path: Path | str, output_rpy_path: Path | str | None = N
     r_path = Path(rpyc_path)
     out_path = r_path.with_suffix(".rpy") if output_rpy_path is None else Path(output_rpy_path)
 
-    rpyc = RpycFile(r_path)
-    # Prefer Slot 1 (pure original AST)
-    loaded = rpyc.load_slot(SLOT_STATEMENTS_PRE)
-    if loaded is None:
-        loaded = rpyc.load_slot(SLOT_STATEMENTS_POST)
+    with RpycFile(r_path) as rpyc:
+        # Prefer Slot 1 (pure original AST)
+        loaded = rpyc.load_slot(SLOT_STATEMENTS_PRE)
+        if loaded is None:
+            loaded = rpyc.load_slot(SLOT_STATEMENTS_POST)
 
     if loaded is None:
         raise ValueError(f"Tệp .rpyc bị hỏng hoặc không có dữ liệu AST hợp lệ: {r_path}")

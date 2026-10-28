@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Sequence
 
 from renslate.core.models import GlossaryEntry, QAIssue
+from renslate.core.textio import normalize_nfc
 from renslate.renpy.mask import MaskedText, find_markup_error, validate
 
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
@@ -180,7 +180,7 @@ def clean_translation(
     If the target consists solely of speaker or relation metadata tags, returns an empty string
     so QA validation flags it as empty and forces re-translation.
     """
-    cleaned = unicodedata.normalize("NFC", target).strip()
+    cleaned = normalize_nfc(target).strip()
     if not cleaned:
         return ""
 
@@ -390,7 +390,7 @@ class QAChecker:
                     )
                 )
 
-        target_norm = unicodedata.normalize("NFC", target).lower()
+        target_norm = normalize_nfc(target).lower()
         for g in glossary_matches:
             if not g.translation.strip():
                 continue
@@ -403,7 +403,7 @@ class QAChecker:
             if not source_has_term:
                 continue
 
-            g_trans = unicodedata.normalize("NFC", g.translation).lower()
+            g_trans = normalize_nfc(g.translation).lower()
             if g_trans not in target_norm:
                 issues.append(
                     QAIssue(

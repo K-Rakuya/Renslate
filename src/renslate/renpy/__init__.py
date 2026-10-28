@@ -59,6 +59,8 @@ from renslate.renpy.parser import (
     string_uid,
 )
 from renslate.renpy.rpyc import (
+    RpycArchive,
+    RpycFile,
     decompile_rpyc,
     extract_character_definitions_from_rpyc,
     extract_dialogue_from_rpyc,
@@ -90,6 +92,8 @@ __all__ = [
     "ParsedUnit",
     "PlaceholderError",
     "PlaceholderIssue",
+    "RpycArchive",
+    "RpycFile",
     "Runner",
     "SayStatement",
     "Severity",
