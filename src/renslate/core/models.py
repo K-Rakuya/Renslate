@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -307,6 +307,129 @@ class SceneSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SceneMacroContext:
+    """Hierarchical macro context of a dialogue scene for prompt enrichment.
+
+    Encapsulates scene boundaries, physical setting, atmosphere, active participants,
+    and narrative summary to guide LLM persona consistency across long script arcs.
+    """
+
+    scene_id: str
+    label: str
+    file: str = ""
+    summary: str = ""
+    location: str = ""
+    atmosphere: str = ""
+    active_characters: tuple[str, ...] = ()
+    temporal_anchor: str = ""
+    first_seq: int = 0
+    last_seq: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.active_characters, tuple):
+            object.__setattr__(
+                self,
+                "active_characters",
+                tuple(self.active_characters) if self.active_characters else (),
+            )
+
+    def is_empty(self) -> bool:
+        """Return True if no narrative context is populated."""
+        return not (
+            self.summary
+            or self.location
+            or self.atmosphere
+            or self.temporal_anchor
+            or self.active_characters
+        )
+
+    def format_prompt_header(self) -> str:
+        """Format macro context into standardized Vietnamese prompt header block for LLM."""
+        lines = ["BỐI CẢNH PHÂN CẢNH & TÓM TẮT CẢNH HIỆN TẠI (SCENE MACRO CONTEXT):"]
+        if self.label:
+            lines.append(f"- Phân cảnh (Scene Label): {self.label}")
+        if self.location:
+            lines.append(f"- Địa điểm (Location): {self.location}")
+        if self.atmosphere:
+            lines.append(f"- Không khí / Cảm xúc (Atmosphere): {self.atmosphere}")
+        if self.temporal_anchor:
+            lines.append(f"- Thời điểm (Time): {self.temporal_anchor}")
+        if self.active_characters:
+            lines.append(f"- Nhân vật hiện diện (Characters): {', '.join(self.active_characters)}")
+        if self.summary:
+            lines.append(f"- Tóm tắt tình huống (Summary): {self.summary}")
+        return "\n".join(lines)
+
+    def with_updates(self, **kwargs: Any) -> SceneMacroContext:
+        """Return a copy of the scene macro context with updated fields."""
+        return replace(self, **kwargs)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize scene macro context to dictionary for JSON persistence."""
+        return {
+            "scene_id": self.scene_id,
+            "label": self.label,
+            "file": self.file,
+            "summary": self.summary,
+            "location": self.location,
+            "atmosphere": self.atmosphere,
+            "active_characters": list(self.active_characters),
+            "temporal_anchor": self.temporal_anchor,
+            "first_seq": self.first_seq,
+            "last_seq": self.last_seq,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> SceneMacroContext:
+        """Deserialize dictionary or Mapping to SceneMacroContext."""
+        if not isinstance(data, (dict, Mapping)):
+            msg = f"Expected dict or Mapping for SceneMacroContext, got {type(data).__name__}"
+            raise TypeError(msg)
+
+        scene_id = str(data.get("scene_id") or "").strip()
+        if not scene_id:
+            msg = "SceneMacroContext requires a non-empty 'scene_id'"
+            raise ValueError(msg)
+
+        label = str(data.get("label") or "").strip()
+        file_path = str(data.get("file") or "").strip()
+        summary = str(data.get("summary") or "").strip()
+        location = str(data.get("location") or "").strip()
+        atmosphere = str(data.get("atmosphere") or "").strip()
+        temporal_anchor = str(data.get("temporal_anchor") or "").strip()
+
+        raw_chars = data.get("active_characters")
+        if isinstance(raw_chars, (list, tuple)):
+            active_characters = tuple(str(c).strip() for c in raw_chars if str(c).strip())
+        elif isinstance(raw_chars, str) and raw_chars.strip():
+            active_characters = tuple(c.strip() for c in raw_chars.split(",") if c.strip())
+        else:
+            active_characters = ()
+
+        raw_meta = data.get("metadata")
+        metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+
+        first_seq = int(data.get("first_seq") or 0)
+        last_seq = int(data.get("last_seq") or 0)
+
+        return cls(
+            scene_id=scene_id,
+            label=label,
+            file=file_path,
+            summary=summary,
+            location=location,
+            atmosphere=atmosphere,
+            active_characters=active_characters,
+            temporal_anchor=temporal_anchor,
+            first_seq=first_seq,
+            last_seq=last_seq,
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BatchLog:
     """Execution log for an LLM translation batch."""
 
@@ -339,6 +462,7 @@ __all__ = [
     "QAIssue",
     "RelationshipEdge",
     "RelationshipKind",
+    "SceneMacroContext",
     "SceneSummary",
     "Slot",
     "Status",

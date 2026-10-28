@@ -48,6 +48,7 @@ from renslate.core.models import (
     QAIssue,
     RelationshipEdge,
     RelationshipKind,
+    SceneMacroContext,
     SceneSummary,
     Slot,
     Status,
@@ -62,6 +63,7 @@ from renslate.core.textio import TextFile, read_text_file, write_atomic
 from renslate.engine.analyze import (
     bootstrap_characters_with_llm,
     extract_character_definitions,
+    extract_scene_macro_contexts,
     infer_character_gender_nlp,
     infer_character_role_nlp,
     run_analysis,
@@ -70,6 +72,7 @@ from renslate.engine.analyze import (
 from renslate.engine.context import (
     QUOTED_RULES,
     ContextBuilder,
+    ContextBundle,
     LookbackItem,
     estimate_tokens,
 )
@@ -257,6 +260,7 @@ __all__ = [
     "ConfigError",
     # Context
     "ContextBuilder",
+    "ContextBundle",
     "DashboardState",
     # Database
     "Database",
@@ -296,6 +300,7 @@ __all__ = [
     # SDK
     "Runner",
     "SayStatement",
+    "SceneMacroContext",
     "SceneSummary",
     "SdkError",
     # Parser
@@ -341,6 +346,7 @@ __all__ = [
     "extract_character_definitions",
     "extract_json_object",
     "extract_project",
+    "extract_scene_macro_contexts",
     "find_launcher",
     "find_markup_error",
     "fingerprint",

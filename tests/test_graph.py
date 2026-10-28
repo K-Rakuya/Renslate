@@ -360,6 +360,48 @@ class TestRelationshipGraphUnit:
         assert len(undirected_path) == 1
         assert undirected_path[0] == e_cd
 
+    def test_bfs_backtracking_edge_cases(self) -> None:
+        graph = RelationshipGraph()
+        # Diamond topology with an extra detour:
+        # S -> A -> T (length 2)
+        # S -> B -> C -> T (length 3)
+        # S -> S (self-loop)
+        # T -> S (cycle back to start)
+        e_sa = RelationshipEdge("S", "A", RelationshipKind.FRIENDSHIP_CLOSE)
+        e_at = RelationshipEdge("A", "T", RelationshipKind.FRIENDSHIP_CLOSE)
+        e_sb = RelationshipEdge("S", "B", RelationshipKind.RIVAL_HOSTILE)
+        e_bc = RelationshipEdge("B", "C", RelationshipKind.RIVAL_HOSTILE)
+        e_ct = RelationshipEdge("C", "T", RelationshipKind.RIVAL_HOSTILE)
+        e_ss = RelationshipEdge("S", "S", RelationshipKind.FAMILY_SIBLING)
+        e_ts = RelationshipEdge("T", "S", RelationshipKind.ROMANCE)
+
+        for edge in [e_sa, e_at, e_sb, e_bc, e_ct, e_ss, e_ts]:
+            graph.add_edge(edge)
+
+        # BFS must choose the shortest path [S->A, A->T] of length 2
+        path = graph.find_path("S", "T")
+        assert path == [e_sa, e_at]
+
+        # max_depth=1 should fail (shortest is 2)
+        assert graph.find_path("S", "T", max_depth=1) == []
+
+        # max_depth=2 should succeed
+        assert graph.find_path("S", "T", max_depth=2) == [e_sa, e_at]
+
+        # max_depth <= 0 returns empty immediately
+        assert graph.find_path("S", "T", max_depth=0) == []
+        assert graph.find_path("S", "T", max_depth=-5) == []
+
+        # Cycle back from T to S is traversable if directed=True
+        assert graph.find_path("T", "S", directed=True) == [e_ts]
+
+        # Self-query contract
+        assert graph.find_path("S", "S") == []
+
+        # Nonexistent node
+        assert graph.find_path("S", "UNKNOWN") == []
+        assert graph.find_path("UNKNOWN", "T") == []
+
     def test_subgraph_extraction(self) -> None:
         graph = RelationshipGraph()
         e1 = RelationshipEdge("A", "B", RelationshipKind.ROMANCE)
