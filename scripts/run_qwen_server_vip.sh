@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Renslate - Native MoE LLM Server Launcher (Standardized & Low-Overhead)
-# Architecture: Qwen3.6-35B-A3B-UD-Q3_K_M (MoE, ~3B active params / token)
+# Renslate - High-Throughput Gemma LLM Server Launcher (Standardized & Low-Overhead)
+# Architecture: Gemma-4-26B-A4B-it-QAT-UD-Q4_K_XL (~4B active params / token)
 # Platform    : AMD Ryzen 7 8845H (8C/16T Zen 4) + RTX 4060 Laptop 8GB + 16GB RAM
-# Optimization: 1) Maximum GPU offload (-fit on, FlashAttention on, KV q8_0)
-#               2) Zero-SSD wear (-lzm off, -lm mmap, no disk checkpoints)
-#               3) Low CPU heat (Physical core pinning, --poll 0 sleep mode)
+# Optimization: 1) N-Gram Speculative Decoding (PLD, +40-60% tok/s)
+#               2) Asymmetric Zen 4 Threading (-t 4 gen, -tb 8 prefill)
+#               3) Asymmetric KV Cache (-ctk q4_1, -ctv q8_0)
+#               4) Min-P Dynamic Sampling (--min-p 0.05)
+#               5) Zero-SSD wear (-lzm off, -lm mmap, no disk checkpoints)
 # ==============================================================================
 set -euo pipefail
 
@@ -57,7 +59,7 @@ LOAD_MODE="${RENSLATE_LOAD_MODE:-mmap}"
 # ------------------------------------------------------------------------------
 printf "${CLR_BOLD}${CLR_CYAN}"
 echo "================================================================================"
-echo "          Renslate — Native MoE LLM Server (llama.cpp)                          "
+echo "          Renslate — High-Throughput Gemma LLM Server (llama.cpp)                "
 echo "================================================================================"
 printf "${CLR_RESET}"
 
