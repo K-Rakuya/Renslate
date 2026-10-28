@@ -40,7 +40,7 @@ class TestMigration3Stress:
         """A fresh database cleanly migrates to schema v3 with all tables and columns."""
         db_path = tmp_path / "fresh.db"
         with Database.open(db_path, create=True) as db:
-            assert db.schema_version == 3
+            assert db.schema_version == len(MIGRATIONS)
 
             # Verify character_relationships table and index
             conn = db._connection
@@ -191,7 +191,7 @@ class TestMigration3Stress:
 
         # 3. Open through Database.open() to trigger Migration 3
         with Database.open(db_path, create=False) as db:
-            assert db.schema_version == 3
+            assert db.schema_version == len(MIGRATIONS)
 
             # Verify all 100 units intact
             units = list(db.iter_units())
@@ -249,7 +249,7 @@ class TestMigration3Stress:
 
         # 6. Re-open to confirm idempotency and clean re-access
         with Database.open(db_path, create=False) as db2:
-            assert db2.schema_version == 3
+            assert db2.schema_version == len(MIGRATIONS)
             assert db2.count_relationships() == 1
 
 

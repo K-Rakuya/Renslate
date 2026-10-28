@@ -183,8 +183,9 @@ def translate_glossary_with_llm(
     for i in range(0, len(untranslated), batch_size):
         chunk = untranslated[i : i + batch_size]
         terms = [e.term for e in chunk]
-        user_prompt = "Dịch các thuật ngữ sau sang tiếng Việt:\n" + json.dumps(
-            terms, ensure_ascii=False
+        user_prompt = (
+            'Dịch các thuật ngữ sau sang tiếng Việt dưới dạng JSON object {"Term": "Dịch"}:\n'
+            + json.dumps(terms, ensure_ascii=False)
         )
         try:
             result_dict, _, _ = llm.complete_json(system_prompt, user_prompt)

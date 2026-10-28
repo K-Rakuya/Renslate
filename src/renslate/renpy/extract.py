@@ -413,13 +413,17 @@ def extract(project: Project, database: Database, *, now: str | None = None) -> 
     first: dict[str, ParsedUnit] = {}
     existing: dict[str, str | None] = {}
     slots: list[Slot] = []
+    seen_slots: set[tuple[str, str, int]] = set()
     for parsed in scanner.units:
         first.setdefault(parsed.uid, parsed)
         if existing.get(parsed.uid) is None:
             existing[parsed.uid] = parsed.existing
-        slots.append(
-            Slot(parsed.uid, parsed.file, parsed.line, parsed.anchor_line, parsed.fingerprint)
-        )
+        slot_key = (parsed.uid, parsed.file, parsed.line)
+        if slot_key not in seen_slots:
+            seen_slots.add(slot_key)
+            slots.append(
+                Slot(parsed.uid, parsed.file, parsed.line, parsed.anchor_line, parsed.fingerprint)
+            )
 
     with database.transaction():
         stored = database.units()

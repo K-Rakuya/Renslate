@@ -77,6 +77,30 @@ def test_extract_json_doubled_quotes() -> None:
     }
 
 
+def test_extract_json_array_of_dicts() -> None:
+    raw = '[{"Inner Sanctum": "Thâm Cung"}, {"Qi Mastery": "Khí Thành Thuật"}]'
+    res = extract_json_object(raw)
+    assert res == {"Inner Sanctum": "Thâm Cung", "Qi Mastery": "Khí Thành Thuật"}
+
+
+def test_extract_json_array_of_pairs() -> None:
+    raw = '[["Inner Sanctum", "Thâm Cung"], ["Qi Mastery", "Khí Thành Thuật"]]'
+    res = extract_json_object(raw)
+    assert res == {"Inner Sanctum": "Thâm Cung", "Qi Mastery": "Khí Thành Thuật"}
+
+
+def test_extract_json_truncated_array() -> None:
+    raw = '[{"Inner Sanctum": "Thâm Cung"}, {"Qi Mastery": "Khí Thành Thuật"'
+    res = extract_json_object(raw)
+    assert res == {"Inner Sanctum": "Thâm Cung", "Qi Mastery": "Khí Thành Thuật"}
+
+
+def test_extract_json_keys_with_spaces_in_fallback() -> None:
+    raw = '"Inner Sanctum": "Thâm Cung",\n"Qi Mastery": "Khí Thành Thuật"'
+    res = extract_json_object(raw)
+    assert res == {"Inner Sanctum": "Thâm Cung", "Qi Mastery": "Khí Thành Thuật"}
+
+
 def test_extract_json_ignores_renpy_tags() -> None:
     raw = "{size=60}{font=fonts/chinese-rocks.otf}Sau đó, vào ban đêm.{/font}{/size}"
     with pytest.raises(LLMError):
