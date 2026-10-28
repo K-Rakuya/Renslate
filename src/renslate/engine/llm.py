@@ -500,10 +500,12 @@ class LLMClient:
             ],
             "temperature": self.config.temperature if temperature is None else temperature,
             "top_p": 0.9,
-            "min_p": self.config.min_p if min_p is None else min_p,
             "repeat_penalty": 1.15,
             "stop": ["\n\n//", "\n//", "<|im_end|>", "<|endoftext|>"],
         }
+        eff_min_p = self.config.min_p if min_p is None else min_p
+        if eff_min_p > 0:
+            payload["min_p"] = eff_min_p
         if effective_grammar is not None:
             payload["grammar"] = effective_grammar
         elif effective_schema is not None:

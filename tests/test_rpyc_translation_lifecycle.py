@@ -250,3 +250,33 @@ def test_pure_rpyc_e2e_translation_lifecycle(tmp_path: Path) -> None:
     assert expected_danger in tl_content
     assert 'mc "Chúng ta đã ghi được [score] điểm rồi."' in tl_content
     assert 'e "Hội Bóng Đêm sẽ không thể ngăn cản chúng ta."' in tl_content
+
+
+def test_hybrid_game_auto_synthesizes_from_rpyc(tmp_path: Path) -> None:
+    """A hybrid project with both .rpy and .rpyc files automatically synthesizes skeletons from bytecode."""
+    project_root = tmp_path / "hybrid_project"
+    game_dir = project_root / "game"
+    _create_bytecode_game(game_dir)
+
+    # In a hybrid project, .rpy source files also exist on disk
+    (game_dir / "story.rpy").write_text(
+        'label start:\n    mc "Dummy line in source"\n    return\n',
+        encoding="utf-8",
+    )
+
+    project = Project.create(project_root)
+    with project.open_db() as db:
+        # Extract without running 'renpy translate' SDK first
+        report = extract(project, db)
+        assert report.units == 4
+        assert report.errors == 0
+
+        # Canonical Ren'Py IDs extracted from .rpyc bytecode
+        units = db.all_units()
+        uids = {u.uid for u in units}
+        assert "d:story_01" in uids
+        assert "d:story_02" in uids
+
+        # Synthesized tl skeleton exists
+        tl_story = project.root / "game" / "tl" / "vietnamese" / "story.rpy"
+        assert tl_story.is_file()

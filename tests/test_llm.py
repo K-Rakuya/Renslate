@@ -185,7 +185,7 @@ def test_llm_client_with_schema() -> None:
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         schema = {"type": "object", "properties": {"d:1": {"type": "string"}}}
-        res, _, _ = client.complete_json("system", "user", schema=schema)
+        res, _, _ = client.complete_json("system", "user", schema=schema, min_p=0.05)
         assert res == {"d:1": "Xin chào!"}
         assert len(captured_requests) == 1
         req_data = captured_requests[0].data

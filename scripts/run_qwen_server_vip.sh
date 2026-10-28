@@ -152,15 +152,11 @@ CMD=(
     -c "$CTX_SIZE" -np "$SLOTS"
     -b "$BATCH" -ub "$UBATCH"
     -fa on
-    -ctk q4_1 -ctv q8_0
+    -ctk q8_0 -ctv q8_0
     -fit on -fitt "$VRAM_MARGIN_MIB"
     -lm "$LOAD_MODE" -lzm off
     "${CPU_ARGS[@]}"
     --poll 50
-    --spec-type ngram-simple
-    --spec-ngram-simple-size-n 24
-    --spec-ngram-simple-size-m 4
-    --spec-ngram-simple-min-hits 1
     -cram "$PROMPT_CACHE_MIB"
     -ctxcp "$CTX_CHECKPOINTS"
     # --no-warmup
@@ -171,7 +167,7 @@ CMD=(
     --skip-chat-parsing
     -n "$MAX_TOKENS"
     --cache-reuse 64
-    --temp "$TEMP" --top-k 20 --top-p 0.8 --min-p 0.05
+    --temp "$TEMP" --top-k 20 --top-p 0.8
     --sleep-idle-seconds "$SLEEP_IDLE"
 )
 (( ${#DEV_ARGS[@]} )) && CMD+=("${DEV_ARGS[@]}")

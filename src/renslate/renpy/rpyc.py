@@ -1079,6 +1079,14 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
         target_file = tl_root / source_rpy_name
         target_file.parent.mkdir(parents=True, exist_ok=True)
 
+        if target_file.is_file() and target_file.stat().st_size > 0:
+            generated_files.append(target_file)
+            for s in script.strings:
+                if s.text not in seen_ui:
+                    seen_ui.add(s.text)
+                    ui_strings.append((s.filename, s.linenumber, s.text))
+            continue
+
         lines: list[str] = []
         if script.dialogue:
             for item in script.dialogue:
@@ -1114,15 +1122,36 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
 
     if ui_strings:
         ui_file = tl_root / "ui_strings.rpy"
-        lines = [f"translate {target_lang} strings:", ""]
-        for fn, ln, txt in ui_strings:
-            escaped = quote_python_text(txt)
-            lines.append(f"    # {fn}:{ln}")
-            lines.append(f'    old "{escaped}"')
-            lines.append(f'    new "{escaped}"')
-            lines.append("")
-        ui_file.write_text("\n".join(lines), encoding="utf-8")
-        generated_files.append(ui_file)
+        existing_text = ui_file.read_text(encoding="utf-8") if ui_file.is_file() else ""
+        if existing_text:
+            new_strings = [
+                (fn, ln, txt)
+                for fn, ln, txt in ui_strings
+                if f'old "{quote_python_text(txt)}"' not in existing_text
+            ]
+            if new_strings:
+                append_lines: list[str] = [""]
+                for fn, ln, txt in new_strings:
+                    escaped = quote_python_text(txt)
+                    append_lines.append(f"    # {fn}:{ln}")
+                    append_lines.append(f'    old "{escaped}"')
+                    append_lines.append(f'    new "{escaped}"')
+                    append_lines.append("")
+                ui_file.write_text(
+                    existing_text.rstrip() + "\n" + "\n".join(append_lines),
+                    encoding="utf-8",
+                )
+            generated_files.append(ui_file)
+        else:
+            lines = [f"translate {target_lang} strings:", ""]
+            for fn, ln, txt in ui_strings:
+                escaped = quote_python_text(txt)
+                lines.append(f"    # {fn}:{ln}")
+                lines.append(f'    old "{escaped}"')
+                lines.append(f'    new "{escaped}"')
+                lines.append("")
+            ui_file.write_text("\n".join(lines), encoding="utf-8")
+            generated_files.append(ui_file)
 
     return generated_files
 

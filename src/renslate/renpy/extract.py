@@ -276,15 +276,14 @@ def scan_project(
         key=lambda path: project.relative(path),
     )
     if rpyc_files:
-        has_unextracted_rpyc = False
-        for rpyc_path in rpyc_files:
-            rel = rpyc_path.relative_to(search_dir)
-            if rel.parts and rel.parts[0] == "game":
-                rel = Path(*rel.parts[1:])
-            expected_tl = root / rel.with_suffix(".rpy")
-            if not expected_tl.is_file():
-                source_rpy = rpyc_path.with_suffix(".rpy")
-                if not source_rpy.is_file():
+        has_unextracted_rpyc = not (root.is_dir() and any(root.rglob("*.rpy")))
+        if not has_unextracted_rpyc:
+            for rpyc_path in rpyc_files:
+                rel = rpyc_path.relative_to(search_dir)
+                if rel.parts and rel.parts[0] == "game":
+                    rel = Path(*rel.parts[1:])
+                expected_tl = root / rel.with_suffix(".rpy")
+                if not expected_tl.is_file():
                     has_unextracted_rpyc = True
                     break
 
