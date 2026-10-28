@@ -15,6 +15,7 @@ def test_defaults_match_the_design_document() -> None:
     assert config.target_lang == "vietnamese"
     assert config.llm.base_url == "http://127.0.0.1:8080/v1"
     assert config.llm.n_ctx == 6144
+    assert config.llm.min_p == 0.05
     assert config.batch.max_lines == 25
     assert config.tm.fuzzy_threshold == 0.88
     assert config.qa.max_length_ratio == 1.8
