@@ -213,3 +213,264 @@ def test_context_builder_rich_dialogue_prompt_with_graph() -> None:
     assert expected_f1 in prompt
     assert "[Người nói: Liana -> Người nghe: Ren] I'm right here." in prompt
 
+
+def test_unit_file_derivation_from_ref() -> None:
+    u = Unit("d:1", UnitKind.DIALOGUE, 1, "Hello", Status.PENDING, ref="game/ch1.rpy:42")
+    assert u.file == "game/ch1.rpy"
+
+    u_explicit = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "World",
+        Status.PENDING,
+        ref="game/ch1.rpy:42",
+        file="custom/path.rpy",
+    )
+    assert u_explicit.file == "custom/path.rpy"
+
+    u_no_colon = Unit("d:3", UnitKind.DIALOGUE, 3, "Test", Status.PENDING, ref="game/script.rpy")
+    assert u_no_colon.file == "game/script.rpy"
+
+
+def test_interlocutor_isolation_on_scene_label_change() -> None:
+    from renslate.engine.context import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    u1 = Unit(
+        "d:1",
+        UnitKind.DIALOGUE,
+        1,
+        "Goodbye for now.",
+        Status.PENDING,
+        speaker="ren",
+        label="scene_forest",
+    )
+    res1 = resolver.resolve(u1)
+    assert res1.speaker == "ren"
+    assert res1.listener is None
+
+    # u2 is in a new scene label
+    u2 = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "Welcome to the academy.",
+        Status.PENDING,
+        speaker="teacher",
+        label="scene_classroom",
+    )
+    res2 = resolver.resolve(u2, prev_unit=u1)
+    # Speaker must NOT leak across scene boundary into listener
+    assert res2.speaker == "teacher"
+    assert res2.listener is None
+    assert res2.resolution_method != "turn_taking"
+
+
+def test_interlocutor_isolation_on_script_file_change() -> None:
+    from renslate.engine.context import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    u1 = Unit(
+        "d:1",
+        UnitKind.DIALOGUE,
+        1,
+        "End of chapter 1.",
+        Status.PENDING,
+        speaker="ren",
+        ref="game/ch1.rpy:100",
+    )
+    res1 = resolver.resolve(u1)
+    assert res1.speaker == "ren"
+
+    # u2 is in chapter 2 file
+    u2 = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "Beginning of chapter 2.",
+        Status.PENDING,
+        speaker="narrator_char",
+        ref="game/ch2.rpy:5",
+    )
+    res2 = resolver.resolve(u2, prev_unit=u1)
+    assert res2.speaker == "narrator_char"
+    assert res2.listener is None
+
+
+def test_interlocutor_turn_taking_resumes_within_new_scene() -> None:
+    from renslate.engine.context import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    # Scene 1 dialogue
+    u1 = Unit(
+        "d:1",
+        UnitKind.DIALOGUE,
+        1,
+        "Line in scene 1",
+        Status.PENDING,
+        speaker="ren",
+        label="scene_1",
+    )
+    res1 = resolver.resolve(u1)
+    assert res1.listener is None
+
+    # Scene 2 dialogue line 1 (transition: listener isolated)
+    u2 = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "Line 1 in scene 2",
+        Status.PENDING,
+        speaker="liana",
+        label="scene_2",
+    )
+    res2 = resolver.resolve(u2, prev_unit=u1)
+    assert res2.speaker == "liana"
+    assert res2.listener is None
+
+    # Scene 2 dialogue line 2 (turn-taking resumes within scene 2)
+    u3 = Unit(
+        "d:3",
+        UnitKind.DIALOGUE,
+        3,
+        "Line 2 in scene 2",
+        Status.PENDING,
+        speaker="ren",
+        label="scene_2",
+    )
+    res3 = resolver.resolve(u3, prev_unit=u2)
+    assert res3.speaker == "ren"
+    assert res3.listener == "liana"
+    assert res3.resolution_method == "turn_taking"
+
+
+def test_interlocutor_isolation_with_narrator_at_transition() -> None:
+    from renslate.engine.context import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    u1 = Unit(
+        "d:1",
+        UnitKind.DIALOGUE,
+        1,
+        "Stay safe.",
+        Status.PENDING,
+        speaker="ren",
+        label="scene_1",
+    )
+    resolver.resolve(u1)
+
+    # Transition unit is narrator (no speaker)
+    u2 = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "The next morning arrived quietly.",
+        Status.PENDING,
+        speaker=None,
+        label="scene_2",
+    )
+    res2 = resolver.resolve(u2, prev_unit=u1)
+    assert res2.is_monologue is True
+
+    # First spoken line in scene 2
+    u3 = Unit(
+        "d:3",
+        UnitKind.DIALOGUE,
+        3,
+        "Good morning everyone.",
+        Status.PENDING,
+        speaker="liana",
+        label="scene_2",
+    )
+    res3 = resolver.resolve(u3, prev_unit=u2)
+    assert res3.speaker == "liana"
+    assert res3.listener is None
+
+
+def test_kinship_alias_cleared_across_scene_boundary() -> None:
+    from renslate.engine.context import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    # In scene 1, "father" is bound to Lord Vane
+    u1 = Unit(
+        "d:1",
+        UnitKind.DIALOGUE,
+        1,
+        "I understand, father.",
+        Status.PENDING,
+        speaker="daughter",
+        label="scene_1",
+    )
+    # Simulate known alias
+    resolver._aliases["father"] = "Lord Vane"
+    assert "father" in resolver._aliases
+
+    # Moving to scene 2 clears aliases
+    u2 = Unit(
+        "d:2",
+        UnitKind.DIALOGUE,
+        2,
+        "A new quest awaits.",
+        Status.PENDING,
+        speaker="hero",
+        label="scene_2",
+    )
+    resolver.resolve(u2, prev_unit=u1)
+    assert "father" not in resolver._aliases
+
+
+def test_build_user_prompt_scene_boundary_rich_formatting() -> None:
+    from renslate.engine.graph import RelationshipGraph
+
+    cfg = Config()
+    builder = ContextBuilder(cfg)
+    chars = {
+        "ren": CharacterProfile("ren", "Ren"),
+        "liana": CharacterProfile("liana", "Liana"),
+        "guard": CharacterProfile("guard", "Guard"),
+    }
+    graph = RelationshipGraph()
+
+    units = [
+        Unit(
+            "d:1",
+            UnitKind.DIALOGUE,
+            1,
+            "Let's leave the forest.",
+            Status.PENDING,
+            speaker="ren",
+            label="scene_forest",
+        ),
+        Unit(
+            "d:2",
+            UnitKind.DIALOGUE,
+            2,
+            "Halt! Who goes there?",
+            Status.PENDING,
+            speaker="guard",
+            label="scene_castle_gate",
+        ),
+        Unit(
+            "d:3",
+            UnitKind.DIALOGUE,
+            3,
+            "We are travelers.",
+            Status.PENDING,
+            speaker="liana",
+            label="scene_castle_gate",
+        ),
+    ]
+
+    prompt = builder.build_user_prompt(units, characters=chars, graph=graph)
+
+    # d:1 in scene_forest: speaker ren, no listener
+    assert "d:1 | [Người nói: ren] Let's leave the forest." in prompt
+
+    # d:2 in scene_castle_gate: Guard speaking at scene transition -> MUST NOT have Ren as listener!
+    assert "d:2 | [Người nói: guard | Cảm xúc: inquiring] Halt! Who goes there?" in prompt
+    assert "Người nghe" not in prompt.split("d:2 |")[1].split("d:3 |")[0]
+
+    # d:3 in scene_castle_gate: Liana speaking to Guard -> turn taking in same scene!
+    assert "d:3 | [Người nói: Liana -> Người nghe: Guard] We are travelers." in prompt
+
