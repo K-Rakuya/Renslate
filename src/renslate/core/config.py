@@ -28,6 +28,9 @@ class LLMConfig:
     temperature: float = _bounded(0.25, 0.0, 2.0)
     timeout_s: float = _bounded(600.0, 1.0)
     max_retries: int = _bounded(3, 0, 20)
+    grammar: str | None = None
+    json_schema: dict[str, Any] | None = None
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +142,7 @@ def _coerce(value: object, hint: Any, metadata: dict[str, Any], name: str) -> An
     allowed = typing.get_args(hint) or (hint,)
     if value is None and type(None) in allowed:
         return None
-    types = tuple(t for t in allowed if t is not type(None))
+    types = tuple(typing.get_origin(t) or t for t in allowed if t is not type(None))
     if isinstance(value, bool) and bool not in types:
         raise ConfigError(f"'{name}' phải có kiểu {_describe(types)}")
     if float in types and isinstance(value, int) and not isinstance(value, bool):

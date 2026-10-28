@@ -13,7 +13,7 @@ from typing import Any
 from renslate.core.config import Config
 from renslate.core.db import Database, utc_timestamp
 from renslate.core.errors import LLMError
-from renslate.core.models import BatchLog, Origin, Status, Unit
+from renslate.core.models import BatchLog, Origin, Status, Unit, UnitKind
 from renslate.core.project import Project
 from renslate.engine.context import (
     ContextBuilder,
@@ -23,7 +23,7 @@ from renslate.engine.context import (
 )
 from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
-from renslate.engine.llm import LLMClient
+from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
 from renslate.engine.tm import TranslationMemory
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
@@ -74,33 +74,306 @@ class TranslationStats:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class DialogueTurn:
+    """A contiguous run of dialogue units spoken by the same character or narration."""
+
+    speaker: str | None
+    normalized_speaker: str | None
+    units: list[Unit]
+    tokens: int
+    is_narration: bool
+
+
+@dataclass(slots=True)
+class TurnCluster:
+    """A cohesive conversational interaction block (e.g. exchange turn pair)."""
+
+    units: list[Unit]
+    tokens: int
+    speakers: set[str]
+    kind: UnitKind
+    label: str | None
+    file: str | None
+
+
+def _extract_unit_file(unit: Unit | None) -> str | None:
+    """Safely extract source script file path from Unit.file or Unit.ref."""
+    if unit is None:
+        return None
+    f = getattr(unit, "file", None)
+    if isinstance(f, str) and f:
+        return f
+    ref = getattr(unit, "ref", None)
+    if isinstance(ref, str) and ref:
+        return ref.rsplit(":", 1)[0] if ":" in ref else ref
+    return None
+
+
+def _normalize_speaker(speaker: str | None) -> tuple[str | None, bool]:
+    """Classify speaker into normalized tag and narration boolean."""
+    if not speaker:
+        return None, True
+    clean = speaker.strip()
+    lower = clean.lower()
+    _NON_DIALOGUE = {
+        "t",
+        "th",
+        "thought",
+        "thinking",
+        "narrator",
+        "narration",
+        "none",
+        "all",
+        "system",
+        "ui",
+        "menu",
+    }
+    if lower in _NON_DIALOGUE:
+        return lower, True
+    return clean, False
+
+
+def _cluster_dialogue_slice(
+    units: Sequence[Unit], max_lines: int, max_tokens: int
+) -> list[TurnCluster]:
+    """Group dialogue units into cohesive turn exchange clusters."""
+    if not units:
+        return []
+
+    first = units[0]
+    kind = first.kind
+    label = first.label
+    file = _extract_unit_file(first)
+
+    if kind != UnitKind.DIALOGUE:
+        return [
+            TurnCluster(
+                units=[u],
+                tokens=estimate_tokens(u.masked_source or u.source),
+                speakers=set(),
+                kind=kind,
+                label=label,
+                file=file,
+            )
+            for u in units
+        ]
+
+    # 1. Group consecutive lines by the same speaker into DialogueTurn
+    turns: list[DialogueTurn] = []
+    for u in units:
+        spk, is_narr = _normalize_speaker(u.speaker)
+        u_tok = estimate_tokens(u.masked_source or u.source)
+        if turns and turns[-1].normalized_speaker == spk and turns[-1].is_narration == is_narr:
+            turns[-1].units.append(u)
+            turns[-1].tokens += u_tok
+        else:
+            turns.append(
+                DialogueTurn(
+                    speaker=u.speaker,
+                    normalized_speaker=spk,
+                    units=[u],
+                    tokens=u_tok,
+                    is_narration=is_narr,
+                )
+            )
+
+    # 2. Cluster turns into conversational beats (exchange pairs between speaker pairs)
+    target_cluster_lines = max(1, min(max(1, max_lines // 2), 8))
+    target_cluster_tokens = max(1, min(max(1, max_tokens // 2), 350))
+
+    clusters: list[TurnCluster] = []
+    curr_turns: list[DialogueTurn] = []
+    curr_speakers: set[str] = set()
+    curr_lines = 0
+    curr_toks = 0
+
+    def flush_cluster() -> None:
+        nonlocal curr_turns, curr_speakers, curr_lines, curr_toks
+        if not curr_turns:
+            return
+        cluster_units: list[Unit] = []
+        for t in curr_turns:
+            cluster_units.extend(t.units)
+        clusters.append(
+            TurnCluster(
+                units=cluster_units,
+                tokens=curr_toks,
+                speakers=set(curr_speakers),
+                kind=kind,
+                label=label,
+                file=file,
+            )
+        )
+        curr_turns = []
+        curr_speakers = set()
+        curr_lines = 0
+        curr_toks = 0
+
+    for turn in turns:
+        t_lines = len(turn.units)
+        t_toks = turn.tokens
+
+        if turn.is_narration:
+            if curr_turns and (
+                curr_lines >= target_cluster_lines or curr_toks >= target_cluster_tokens
+            ):
+                flush_cluster()
+            curr_turns.append(turn)
+            curr_lines += t_lines
+            curr_toks += t_toks
+            continue
+
+        spk_tag = turn.normalized_speaker or ""
+        if not curr_turns:
+            curr_turns.append(turn)
+            curr_speakers.add(spk_tag)
+            curr_lines += t_lines
+            curr_toks += t_toks
+        else:
+            is_existing_speaker = spk_tag in curr_speakers
+            pair_complete = len(curr_speakers) >= 2
+            size_reached = (curr_lines >= target_cluster_lines) or (
+                curr_toks >= target_cluster_tokens
+            )
+
+            if is_existing_speaker:
+                if size_reached and pair_complete:
+                    flush_cluster()
+                    curr_turns.append(turn)
+                    curr_speakers.add(spk_tag)
+                    curr_lines += t_lines
+                    curr_toks += t_toks
+                else:
+                    curr_turns.append(turn)
+                    curr_lines += t_lines
+                    curr_toks += t_toks
+            else:
+                if pair_complete or (size_reached and curr_speakers):
+                    flush_cluster()
+                    curr_turns.append(turn)
+                    curr_speakers.add(spk_tag)
+                    curr_lines += t_lines
+                    curr_toks += t_toks
+                else:
+                    curr_turns.append(turn)
+                    curr_speakers.add(spk_tag)
+                    curr_lines += t_lines
+                    curr_toks += t_toks
+
+    flush_cluster()
+
+    # 3. Oversized cluster splitting safety guard
+    sanitized_clusters: list[TurnCluster] = []
+    for c in clusters:
+        if len(c.units) <= max_lines and c.tokens <= max_tokens:
+            sanitized_clusters.append(c)
+        else:
+            sub_u: list[Unit] = []
+            sub_tok = 0
+            for u in c.units:
+                u_tok = estimate_tokens(u.masked_source or u.source)
+                if sub_u and (len(sub_u) >= max_lines or sub_tok + u_tok > max_tokens):
+                    sanitized_clusters.append(
+                        TurnCluster(
+                            units=sub_u,
+                            tokens=sub_tok,
+                            speakers=c.speakers,
+                            kind=c.kind,
+                            label=c.label,
+                            file=c.file,
+                        )
+                    )
+                    sub_u = []
+                    sub_tok = 0
+                sub_u.append(u)
+                sub_tok += u_tok
+            if sub_u:
+                sanitized_clusters.append(
+                    TurnCluster(
+                        units=sub_u,
+                        tokens=sub_tok,
+                        speakers=c.speakers,
+                        kind=c.kind,
+                        label=c.label,
+                        file=c.file,
+                    )
+                )
+
+    return sanitized_clusters
+
+
 def partition_batches(
-    units: Sequence[Unit], max_lines: int = 25, max_tokens: int = 700
+    units: Sequence[Unit],
+    max_lines: int = 25,
+    max_tokens: int = 700,
+    *,
+    isolate_scenes: bool = True,
+    allow_cross_scene_packing: bool = False,
 ) -> list[list[Unit]]:
-    """Partition units into batches by scene/label continuity and token capacity."""
+    """Partition units into batches respecting scene boundaries and dialogue turns.
+
+    Uses knapsack-inspired contiguous atomic bin-packing to keep conversational turn pairs
+    (e.g., character exchanges) cohesive within the same batch.
+    """
+    if not units:
+        return []
+
+    if len(units) == 1:
+        return [[units[0]]]
+
+    # Step 1: Slice units into scene segments by (kind, label, file)
+    scene_slices: list[list[Unit]] = []
+    curr_slice: list[Unit] = []
+    prev_u: Unit | None = None
+
+    for u in units:
+        if prev_u is not None:
+            kind_changed = u.kind != prev_u.kind
+            label_changed = (u.label or "").strip() != (prev_u.label or "").strip()
+            file_changed = (
+                _extract_unit_file(u) or ""
+            ).strip() != (_extract_unit_file(prev_u) or "").strip()
+
+            if kind_changed or (isolate_scenes and (label_changed or file_changed)):
+                if curr_slice:
+                    scene_slices.append(curr_slice)
+                curr_slice = []
+
+        curr_slice.append(u)
+        prev_u = u
+
+    if curr_slice:
+        scene_slices.append(curr_slice)
+
+    # Step 2: Cluster dialogue turns and pack clusters using contiguous knapsack bin packing
     batches: list[list[Unit]] = []
     current_batch: list[Unit] = []
     current_tokens = 0
-    current_label: str | None = None
 
-    for unit in units:
-        unit_tokens = estimate_tokens(unit.masked_source or unit.source)
-        label_changed = current_label is not None and unit.label != current_label
-        kind_changed = bool(current_batch and current_batch[-1].kind != unit.kind)
+    for s_slice in scene_slices:
+        clusters = _cluster_dialogue_slice(s_slice, max_lines=max_lines, max_tokens=max_tokens)
 
-        if current_batch and (
-            len(current_batch) >= max_lines
-            or current_tokens + unit_tokens > max_tokens
-            or kind_changed
-            or (label_changed and len(current_batch) >= 10)
-        ):
+        if not allow_cross_scene_packing and current_batch:
             batches.append(current_batch)
             current_batch = []
             current_tokens = 0
 
-        current_batch.append(unit)
-        current_tokens += unit_tokens
-        current_label = unit.label
+        for cluster in clusters:
+            c_units = cluster.units
+            c_tokens = cluster.tokens
+            c_lines = len(c_units)
+
+            if current_batch and (
+                len(current_batch) + c_lines > max_lines
+                or current_tokens + c_tokens > max_tokens
+            ):
+                batches.append(current_batch)
+                current_batch = []
+                current_tokens = 0
+
+            current_batch.extend(c_units)
+            current_tokens += c_tokens
 
     if current_batch:
         batches.append(current_batch)
@@ -340,6 +613,7 @@ class TranslationPipeline:
             "required": [u.uid for u in batch],
             "additionalProperties": False,
         }
+        batch_grammar = generate_batch_gbnf([u.uid for u in batch], allow_cjk=has_cjk_source)
 
         try:
             budget = ContextBuilder.calculate_output_budget(len(batch))
@@ -348,6 +622,7 @@ class TranslationPipeline:
                 system_prompt,
                 user_prompt,
                 max_tokens=budget,
+                grammar=batch_grammar,
                 schema=batch_schema,
                 fallback_single_key=single_key,
             )

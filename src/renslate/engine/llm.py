@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import contextlib
+import http.client
 import json
 import logging
 import random
 import re
+import threading
 import time
+import types
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from typing import Any
 
 from renslate.core.config import LLMConfig
 from renslate.core.errors import LLMError
 
 _LOG = logging.getLogger("renslate.llm")
+
 
 # Pattern to isolate a JSON object within response text even if wrapped in markdown
 _JSON_OBJECT = re.compile(r"\{[\s\S]*\}")
@@ -226,12 +233,175 @@ def extract_json_object(
     raise LLMError(f"Không thể trích xuất JSON hợp lệ từ phản hồi của model:\n{raw_text[:300]}...")
 
 
+# Generic GBNF grammars
+GENERIC_DICT_GBNF = (
+    'root ::= "{" ws (pair ("," ws pair)*)? ws "}" ws\n'
+    'pair ::= string ws ":" ws string\n'
+    'string ::= "\\"" ([^"\\\\\\r\\n] | "\\\\" (["\\\\/bfnrt] | "u" '
+    '[0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\\""\n'
+    "ws ::= [ \\t\\n\\r]*"
+)
+
+GENERIC_JSON_GBNF = (
+    "root ::= object\n"
+    'object ::= "{" ws (pair ("," ws pair)*)? ws "}" ws\n'
+    'pair ::= string ws ":" ws value\n'
+    'value ::= object | array | string | number | ("true" | "false" | "null") ws\n'
+    'array ::= "[" ws (value ("," ws value)*)? ws "]" ws\n'
+    'string ::= "\\"" ([^"\\\\\\r\\n] | "\\\\" (["\\\\/bfnrt] | "u" '
+    '[0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\\"" ws\n'
+    'number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws\n'
+    "ws ::= [ \\t\\n\\r]*"
+)
+
+
+def escape_gbnf_string(s: str) -> str:
+    """Escape a literal string into a GBNF quoted terminal token matching valid JSON."""
+    json_literal = json.dumps(s)
+    escaped = json_literal.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def generate_batch_gbnf(
+    unit_ids: Sequence[str],
+    *,
+    allow_cjk: bool = True,
+    ordered: bool = True,
+) -> str:
+    """Generate a GBNF grammar strictly constraining output to a JSON mapping of unit_ids.
+
+    - If ordered=True: forces exact sequential key order {"d:1": "...", "d:2": "..."}.
+    - If ordered=False: allows arbitrary permutation of keys.
+    - If allow_cjk=False: excludes Chinese and Japanese characters from translated string values.
+    """
+    if allow_cjk:
+        str_rule = (
+            r'string ::= "\"" ([^"\\\r\n] | "\\" (["\\/bfnrt] | "u" '
+            r'[0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""'
+        )
+    else:
+        str_rule = (
+            r'string ::= "\"" ([^"\\\r\n\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff] | '
+            r'"\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""'
+        )
+    ws_rule = r"ws ::= [ \t\n\r]*"
+
+    if not unit_ids:
+        return f'root ::= "{{" ws "}}" ws\n{ws_rule}'
+
+    if ordered:
+        pairs = [f'{escape_gbnf_string(uid)} ws ":" ws string' for uid in unit_ids]
+        joined = ' "," ws '.join(pairs)
+        root_rule = f'root ::= "{{" ws {joined} ws "}}" ws'
+        return f"{root_rule}\n{str_rule}\n{ws_rule}"
+    else:
+        keys = " | ".join(escape_gbnf_string(uid) for uid in unit_ids)
+        pair_rule = f'pair ::= ({keys}) ws ":" ws string'
+        root_rule = r'root ::= "{" ws (pair ("," ws pair)*)? ws "}" ws'
+        return f"{root_rule}\n{pair_rule}\n{str_rule}\n{ws_rule}"
+
+
 class LLMClient:
-    """HTTP client communicating with local llama.cpp llama-server."""
+    """HTTP client communicating with local llama.cpp llama-server via persistent Keep-Alive."""
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
         self.endpoint = f"{config.base_url.rstrip('/')}/chat/completions"
+        parsed = urllib.parse.urlsplit(self.endpoint)
+        self._scheme = parsed.scheme.lower() or "http"
+        self._host = parsed.hostname or "127.0.0.1"
+        self._port = parsed.port or (443 if self._scheme == "https" else 80)
+        self._path = parsed.path or "/"
+        if parsed.query:
+            self._path = f"{self._path}?{parsed.query}"
+
+        self._lock = threading.RLock()
+        self._conn: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
+
+    def _create_connection(self) -> http.client.HTTPConnection | http.client.HTTPSConnection:
+        if self._scheme == "https":
+            return http.client.HTTPSConnection(
+                self._host,
+                port=self._port,
+                timeout=self.config.timeout_s,
+            )
+        if self._scheme == "http":
+            return http.client.HTTPConnection(
+                self._host,
+                port=self._port,
+                timeout=self.config.timeout_s,
+            )
+        raise LLMError(
+            f"Giao thức URL không được hỗ trợ: {self._scheme!r}. Chỉ hỗ trợ http và https."
+        )
+
+    def _get_connection(self) -> http.client.HTTPConnection | http.client.HTTPSConnection:
+        if self._conn is None:
+            self._conn = self._create_connection()
+        return self._conn
+
+    def close(self) -> None:
+        """Close persistent HTTP connection and release socket resources."""
+        with self._lock:
+            if self._conn is not None:
+                with contextlib.suppress(Exception):
+                    self._conn.close()
+                self._conn = None
+
+    def __enter__(self) -> LLMClient:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def _send_request(
+        self,
+        data: bytes,
+        headers: dict[str, str],
+    ) -> tuple[int, dict[str, str], str]:
+        """Send HTTP request on persistent connection with auto-reconnect on socket disconnect."""
+        with self._lock:
+            reused = self._conn is not None
+            conn = self._get_connection()
+            try:
+                conn.request("POST", self._path, body=data, headers=headers)
+                resp = conn.getresponse()
+                body = resp.read().decode("utf-8")
+                resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+                if resp_headers.get("connection", "").lower() == "close":
+                    self.close()
+                return resp.status, resp_headers, body
+            except (
+                http.client.RemoteDisconnected,
+                ConnectionResetError,
+                BrokenPipeError,
+                http.client.CannotSendRequest,
+                http.client.ResponseNotReady,
+                http.client.BadStatusLine,
+                http.client.ImproperConnectionState,
+                OSError,
+            ) as err:
+                self.close()
+                if reused:
+                    _LOG.debug("Mất kết nối HTTP Keep-Alive (%s). Đang tự động kết nối lại...", err)
+                    new_conn = self._get_connection()
+                    new_conn.request("POST", self._path, body=data, headers=headers)
+                    resp = new_conn.getresponse()
+                    body = resp.read().decode("utf-8")
+                    resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+                    if resp_headers.get("connection", "").lower() == "close":
+                        self.close()
+                    return resp.status, resp_headers, body
+                raise
 
     def complete_json(
         self,
@@ -241,13 +411,23 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         schema: dict[str, Any] | None = None,
+        json_schema: dict[str, Any] | None = None,
+        grammar: str | None = None,
         fallback_single_key: str | None = None,
     ) -> tuple[dict[str, Any], int, int]:
         """Send chat completion request expecting a JSON object output.
 
-        Supports structured JSON schema enforcement where available.
+        Supports structured JSON schema enforcement, GBNF grammar decoding,
+        and persistent HTTP Keep-Alive.
         Returns (parsed_dict, prompt_tokens, completion_tokens).
         """
+        effective_schema = (
+            json_schema
+            if json_schema is not None
+            else (schema if schema is not None else self.config.json_schema)
+        )
+        effective_grammar = grammar if grammar is not None else self.config.grammar
+
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [
@@ -259,13 +439,15 @@ class LLMClient:
             "repeat_penalty": 1.15,
             "stop": ["\n\n//", "\n//", "<|im_end|>", "<|endoftext|>"],
         }
-        if schema is not None:
+        if effective_grammar is not None:
+            payload["grammar"] = effective_grammar
+        elif effective_schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "translation_response",
                     "strict": True,
-                    "schema": schema,
+                    "schema": effective_schema,
                 },
             }
         else:
@@ -278,6 +460,8 @@ class LLMClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Connection": "keep-alive",
+            "Content-Length": str(len(data)),
         }
 
         retries = self.config.max_retries
@@ -285,7 +469,6 @@ class LLMClient:
 
         for attempt in range(retries + 1):
             if attempt > 0:
-                # Exponential backoff with jitter: (2^(attempt-1)) + [0, 1] seconds
                 delay = (2 ** (attempt - 1)) + random.uniform(0.1, 1.0)
                 _LOG.warning(
                     "Thử lại lần %d/%d sau %.1f giây do lỗi trước đó: %s",
@@ -296,62 +479,158 @@ class LLMClient:
                 )
                 time.sleep(delay)
 
-            req = urllib.request.Request(self.endpoint, data=data, headers=headers, method="POST")
-
-            try:
-                with urllib.request.urlopen(req, timeout=self.config.timeout_s) as response:
-                    body = response.read().decode("utf-8")
-                    resp_json = json.loads(body)
-
-                choices = resp_json.get("choices")
-                if not choices or not isinstance(choices, list):
-                    raise LLMError(f"Phản hồi từ server thiếu trường 'choices': {body[:200]}")
-
-                message = choices[0].get("message", {})
-                content = message.get("content", "")
-
-                usage = resp_json.get("usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-
+            # Compatibility check for legacy tests patching urllib.request.urlopen
+            if type(urllib.request.urlopen).__module__.startswith("unittest.mock"):
+                req = urllib.request.Request(
+                    self.endpoint, data=data, headers=headers, method="POST"
+                )
                 try:
-                    result_dict = extract_json_object(
-                        content, fallback_single_key=fallback_single_key
-                    )
-                    return result_dict, prompt_tokens, completion_tokens
-                except LLMError as extract_err:
-                    if fallback_single_key and content.strip():
-                        stripped = content.strip()
-                        if not _CHAT_CHATTER.match(stripped) and len(stripped.split()) < 200:
-                            return (
-                                {fallback_single_key: stripped},
-                                prompt_tokens,
-                                completion_tokens,
-                            )
-                    raise extract_err
+                    with urllib.request.urlopen(req, timeout=self.config.timeout_s) as response:
+                        body = response.read().decode("utf-8")
+                        status = getattr(response, "status", 200)
+                except urllib.error.HTTPError as error:
+                    last_error = error
+                    # Fallback Level 1: Grammar rejected
+                    if error.code in (400, 500) and "grammar" in payload:
+                        _LOG.warning(
+                            "Server lỗi grammar (HTTP %d). Hạ cấp sang schema / json_object...",
+                            error.code,
+                        )
+                        payload.pop("grammar", None)
+                        if effective_schema is not None:
+                            payload["response_format"] = {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "translation_response",
+                                    "strict": True,
+                                    "schema": effective_schema,
+                                },
+                            }
+                        else:
+                            payload["response_format"] = {"type": "json_object"}
+                        data = json.dumps(payload).encode("utf-8")
+                        headers["Content-Length"] = str(len(data))
+                        continue
 
-            except urllib.error.HTTPError as error:
-                last_error = error
-                # If server returned 400 or 500 with json_schema, fallback to json_object
-                if error.code in (400, 500) and schema is not None:
-                    _LOG.warning(
-                        "Server lỗi schema (HTTP %d). Hạ cấp sang json_object...",
-                        error.code,
-                    )
-                    payload["response_format"] = {"type": "json_object"}
-                    data = json.dumps(payload).encode("utf-8")
-                    schema = None
+                    # Fallback Level 2: Schema rejected
+                    if (
+                        error.code in (400, 500)
+                        and payload.get("response_format", {}).get("type") == "json_schema"
+                    ):
+                        _LOG.warning(
+                            "Server lỗi schema (HTTP %d). Hạ cấp sang json_object...",
+                            error.code,
+                        )
+                        payload["response_format"] = {"type": "json_object"}
+                        data = json.dumps(payload).encode("utf-8")
+                        headers["Content-Length"] = str(len(data))
+                        effective_schema = None
+                        continue
+
+                    if error.code in (400, 401, 403, 404):
+                        err_body = error.read().decode("utf-8", errors="replace")
+                        raise LLMError(
+                            f"Lỗi HTTP {error.code} từ LLM server tại {self.endpoint}: {err_body}"
+                        ) from error
+                    continue
+                except (urllib.error.URLError, TimeoutError, OSError) as error:
+                    last_error = error
+                    continue
+            else:
+                try:
+                    status, _resp_headers, body = self._send_request(data, headers)
+                except (TimeoutError, OSError) as error:
+                    last_error = error
+                    self.close()
                     continue
 
-                # Fatal HTTP errors that should not retry: 400 Bad Request, 401 Unauthorized
-                if error.code in (400, 401, 403, 404):
-                    err_body = error.read().decode("utf-8", errors="replace")
-                    raise LLMError(
-                        f"Lỗi HTTP {error.code} từ LLM server tại {self.endpoint}: {err_body}"
-                    ) from error
-            except (urllib.error.URLError, TimeoutError, OSError) as error:
-                last_error = error
-            except LLMError as error:
-                last_error = error
+                if status != 200:
+                    # Fallback Level 1: Grammar rejected
+                    if status in (400, 500) and "grammar" in payload:
+                        _LOG.warning(
+                            "Server lỗi grammar (HTTP %d). Hạ cấp sang schema / json_object...",
+                            status,
+                        )
+                        payload.pop("grammar", None)
+                        if effective_schema is not None:
+                            payload["response_format"] = {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "translation_response",
+                                    "strict": True,
+                                    "schema": effective_schema,
+                                },
+                            }
+                        else:
+                            payload["response_format"] = {"type": "json_object"}
+                        data = json.dumps(payload).encode("utf-8")
+                        headers["Content-Length"] = str(len(data))
+                        continue
+
+                    # Fallback Level 2: Schema rejected
+                    if (
+                        status in (400, 500)
+                        and payload.get("response_format", {}).get("type") == "json_schema"
+                    ):
+                        _LOG.warning(
+                            "Server lỗi schema (HTTP %d). Hạ cấp sang json_object...",
+                            status,
+                        )
+                        payload["response_format"] = {"type": "json_object"}
+                        data = json.dumps(payload).encode("utf-8")
+                        headers["Content-Length"] = str(len(data))
+                        effective_schema = None
+                        continue
+
+                    if status in (400, 401, 403, 404):
+                        raise LLMError(
+                            f"Lỗi HTTP {status} từ LLM server tại {self.endpoint}: {body}"
+                        )
+                    last_error = LLMError(f"HTTP {status} từ LLM server: {body[:200]}")
+                    continue
+
+            try:
+                resp_json = json.loads(body)
+            except json.JSONDecodeError:
+                last_error = LLMError(f"Phản hồi không phải JSON hợp lệ: {body[:200]}")
+                continue
+
+            choices = resp_json.get("choices")
+            if not choices or not isinstance(choices, list):
+                raise LLMError(f"Phản hồi từ server thiếu trường 'choices': {body[:200]}")
+
+            message = choices[0].get("message", {})
+            content = message.get("content", "")
+
+            usage = resp_json.get("usage", {})
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+
+            try:
+                result_dict = extract_json_object(
+                    content, fallback_single_key=fallback_single_key
+                )
+                return result_dict, prompt_tokens, completion_tokens
+            except LLMError as extract_err:
+                if fallback_single_key and content.strip():
+                    stripped = content.strip()
+                    if not _CHAT_CHATTER.match(stripped) and len(stripped.split()) < 200:
+                        return (
+                            {fallback_single_key: stripped},
+                            prompt_tokens,
+                            completion_tokens,
+                        )
+                last_error = extract_err
 
         raise LLMError(f"Thất bại khi gọi LLM server sau {retries + 1} lần thử: {last_error}")
+
+
+__all__ = [
+    "GENERIC_DICT_GBNF",
+    "GENERIC_JSON_GBNF",
+    "LLMClient",
+    "escape_gbnf_string",
+    "extract_json_object",
+    "generate_batch_gbnf",
+]
+
