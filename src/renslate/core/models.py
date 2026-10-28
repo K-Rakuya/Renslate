@@ -78,6 +78,12 @@ class Unit:
     origin: Origin | None = None
     qa_flags: tuple[str, ...] = ()
     updated_at: str = ""
+    file: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.file is None and self.ref:
+            extracted_file = self.ref.rsplit(":", 1)[0] if ":" in self.ref else self.ref
+            object.__setattr__(self, "file", extracted_file)
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,8 +21,9 @@ from renslate.engine.tm import FuzzyMatch
 if TYPE_CHECKING:
     from renslate.engine.graph import RelationshipGraph
 
-_CHARS_PER_TOKEN_EN = 3.6
+_CHARS_PER_TOKEN_CJK = 1.2
 _CHARS_PER_TOKEN_VI = 2.8
+_CHARS_PER_TOKEN_EN = 3.6
 
 _NON_DIALOGUE_TAGS = frozenset(
     {
@@ -150,15 +151,46 @@ class ResolvedInterlocutor:
     resolution_method: str = "default"
 
 
+def _extract_unit_file(unit: Unit | None) -> str | None:
+    """Safely extract source script file path from Unit.file or Unit.ref."""
+    if unit is None:
+        return None
+    f = getattr(unit, "file", None)
+    if isinstance(f, str) and f:
+        return f
+    ref = getattr(unit, "ref", None)
+    if isinstance(ref, str) and ref:
+        return ref.rsplit(":", 1)[0] if ":" in ref else ref
+    return None
+
+
+def _is_scene_boundary(curr: Unit, prev: Unit | None) -> bool:
+    """Determine whether curr and prev cross a scene label or file boundary."""
+    if prev is None:
+        return False
+    curr_label = (curr.label or "").strip()
+    prev_label = (prev.label or "").strip()
+    if curr_label != prev_label:
+        return True
+
+    curr_file = (_extract_unit_file(curr) or "").strip()
+    prev_file = (_extract_unit_file(prev) or "").strip()
+    return curr_file != prev_file
+
+
 class InterlocutorResolver:
     """Real-time O(1) zero-token resolver for interlocutor turn-taking and vocatives."""
 
     def __init__(self) -> None:
         self._aliases: dict[str, str] = {}
+        self._prev_unit: Unit | None = None
+        self._prev_speaker: str | None = None
 
     def reset(self) -> None:
-        """Clear dynamic alias associations for a new scene."""
+        """Clear dynamic alias associations and turn-taking state for a new scene."""
         self._aliases.clear()
+        self._prev_unit = None
+        self._prev_speaker = None
 
     @staticmethod
     def _detect_emotion(text: str) -> str | None:
@@ -347,6 +379,11 @@ class InterlocutorResolver:
         known_names: dict[str, str] | None = None,
     ) -> ResolvedInterlocutor:
         """Resolve speaker, listener, and monologue state in O(1) time."""
+        effective_prev = prev_unit if prev_unit is not None else self._prev_unit
+        if effective_prev is not None and _is_scene_boundary(unit, effective_prev):
+            self.reset()
+            effective_prev = None
+
         spk = unit.speaker.strip() if unit.speaker else None
         spk_lower = spk.lower() if spk else ""
         src = unit.source.strip()
@@ -355,6 +392,8 @@ class InterlocutorResolver:
         # 1. Monologue / Soliloquy classification
         is_mono, clean_dial = _analyze_monologue_and_dialogue(src)
         if not spk or spk_lower in _NON_DIALOGUE_TAGS or is_mono:
+            self._prev_unit = unit
+            self._prev_speaker = spk
             return ResolvedInterlocutor(
                 speaker=spk,
                 listener=None,
@@ -368,6 +407,8 @@ class InterlocutorResolver:
         # 2. Vocative Detection on clean dialogue
         vocative_target, _ = self._extract_vocative(clean_dial, name_map, spk)
         if vocative_target:
+            self._prev_unit = unit
+            self._prev_speaker = spk
             return ResolvedInterlocutor(
                 speaker=spk,
                 listener=vocative_target,
@@ -391,10 +432,12 @@ class InterlocutorResolver:
                         spk=spk,
                         active_speakers=active_speakers,
                         known_names=known_names,
-                        prev_unit=prev_unit,
+                        prev_unit=effective_prev,
                         src=clean_dial,
                     )
                     if target:
+                        self._prev_unit = unit
+                        self._prev_speaker = spk
                         return ResolvedInterlocutor(
                             speaker=spk,
                             listener=target,
@@ -412,10 +455,12 @@ class InterlocutorResolver:
                         spk=spk,
                         active_speakers=active_speakers,
                         known_names=known_names,
-                        prev_unit=prev_unit,
+                        prev_unit=effective_prev,
                         src=clean_dial,
                     )
                     if target:
+                        self._prev_unit = unit
+                        self._prev_speaker = spk
                         return ResolvedInterlocutor(
                             speaker=spk,
                             listener=target,
@@ -425,9 +470,9 @@ class InterlocutorResolver:
                         )
 
         # 4. Turn-Taking Adjacency
-        if prev_unit and prev_unit.speaker:
-            prev_spk = prev_unit.speaker.strip()
-            prev_src = prev_unit.source.strip()
+        if effective_prev and effective_prev.speaker:
+            prev_spk = effective_prev.speaker.strip()
+            prev_src = effective_prev.source.strip()
             prev_is_mono, _ = _analyze_monologue_and_dialogue(prev_src)
             prev_is_non_dialogue = prev_spk.lower() in _NON_DIALOGUE_TAGS or prev_is_mono
             if prev_spk.lower() != spk_lower and not prev_is_non_dialogue:
@@ -438,6 +483,8 @@ class InterlocutorResolver:
                         c = self._clean_cand(m_t.group(1))
                         if c in _KINSHIP_WORDS and c not in self._aliases:
                             self._aliases[c] = prev_spk
+                self._prev_unit = unit
+                self._prev_speaker = spk
                 return ResolvedInterlocutor(
                     speaker=spk,
                     listener=prev_spk,
@@ -446,6 +493,8 @@ class InterlocutorResolver:
                     resolution_method="turn_taking",
                 )
 
+        self._prev_unit = unit
+        self._prev_speaker = spk
         return ResolvedInterlocutor(
             speaker=spk,
             listener=None,
@@ -603,9 +652,40 @@ def format_rich_dialogue_line(
 
 
 def estimate_tokens(text: str, is_vietnamese: bool = False) -> int:
-    """Heuristic token estimation based on character count and language density."""
-    ratio = _CHARS_PER_TOKEN_VI if is_vietnamese else _CHARS_PER_TOKEN_EN
-    return max(1, math.ceil(len(text) / ratio))
+    """Multi-script token estimation distinguishing CJK (1.2), Vietnamese (2.8), and ASCII (3.6)."""
+    if not text:
+        return 0
+    if not is_vietnamese and text.isascii():
+        return max(1, math.ceil(len(text) / _CHARS_PER_TOKEN_EN))
+
+    cjk = 0
+    vi = 0
+    other = 0
+    for ch in text:
+        cp = ord(ch)
+        if cp < 128:
+            if is_vietnamese:
+                vi += 1
+            else:
+                other += 1
+        elif (
+            0x3000 <= cp <= 0x9FFF
+            or 0xAC00 <= cp <= 0xD7AF
+            or 0xF900 <= cp <= 0xFAFF
+            or 0xFF00 <= cp <= 0xFFEF
+        ):
+            cjk += 1
+        elif is_vietnamese or (
+            0x1EA0 <= cp <= 0x1EF9
+            or 0x00C0 <= cp <= 0x00FF
+            or 0x0100 <= cp <= 0x01BF
+        ):
+            vi += 1
+        else:
+            other += 1
+
+    tokens = cjk / _CHARS_PER_TOKEN_CJK + vi / _CHARS_PER_TOKEN_VI + other / _CHARS_PER_TOKEN_EN
+    return max(1, math.ceil(tokens))
 
 
 QUOTED_RULES = (
@@ -684,6 +764,36 @@ class ContextBundle:
             object.__setattr__(self, "glossary_matches", tuple(self.glossary_matches))
         if not isinstance(self.lookback, tuple):
             object.__setattr__(self, "lookback", tuple(self.lookback))
+
+
+def _format_pronoun_pair(rule_text: str) -> str:
+    rule_clean = rule_text.strip()
+    if " - " in rule_clean and not rule_clean.startswith("xưng"):
+        parts = rule_clean.split(" - ", 1)
+        return f"xưng '{parts[0].strip()}', gọi '{parts[1].strip()}'"
+    return rule_clean
+
+
+def _format_relational_rule(
+    p_spk: CharacterProfile,
+    p_tgt: CharacterProfile,
+    rule_text: str,
+) -> str:
+    rule_clean = rule_text.strip()
+    if " - " in rule_clean and not rule_clean.startswith("xưng"):
+        parts = [p.strip() for p in rule_clean.split(" - ", 1)]
+        self_p, target_p = parts[0], parts[1]
+        return (
+            f"  * Khi {p_spk.display_name} ({p_spk.tag}) nói với "
+            f"{p_tgt.display_name} ({p_tgt.tag}): Tự xưng (I/me/my) là '{self_p}', "
+            f"gọi đối phương (you/your) là '{target_p}'. "
+            f"(QUY TẮC: Mọi câu có 'you' [Do you..., Why are you...] "
+            f"BẮT BUỘC dịch là '{target_p}', TUYỆT ĐỐI CẤM dịch 'you' thành '{self_p}')."
+        )
+    return (
+        f"  * {p_spk.display_name} ({p_spk.tag}) khi nói với "
+        f"{p_tgt.display_name} ({p_tgt.tag}): {rule_clean}"
+    )
 
 
 class ContextBuilder:
@@ -819,6 +929,10 @@ class ContextBuilder:
 
             prev_unit: Unit | None = None
             for u in batch_units:
+                if prev_unit is not None and _is_scene_boundary(u, prev_unit):
+                    active_resolver.reset()
+                    prev_unit = None
+
                 if u.speaker:
                     resolved = active_resolver.resolve(
                         unit=u,
@@ -868,46 +982,8 @@ class ContextBuilder:
 
         sections: list[str] = []
 
-        if glossary_matches and available_budget > 100:
-            gl_lines = ["THUẬT NGỮ BẮT BUỘC (GLOSSARY):"]
-            candidate_terms: list[str] = []
-            for g in glossary_matches:
-                if g.translation.strip():
-                    note_str = f" ({g.notes})" if g.notes else ""
-                    gl_lines.append(f"- {g.term} -> {g.translation}{note_str}")
-                elif g.kind in ("name", "location", "proper", "candidate") or not g.kind:
-                    candidate_terms.append(g.term)
-
-            if len(gl_lines) > 1:
-                gl_block = "\n".join(gl_lines)
-                tokens = estimate_tokens(gl_block)
-                if tokens <= available_budget:
-                    sections.append(gl_block)
-                    available_budget -= tokens
-
-            known_char_names = {
-                cp.display_name.lower() for cp in characters.values() if cp.display_name
-            } | set(characters.keys())
-
-            filtered_candidates = [
-                ct for ct in candidate_terms if ct.lower() not in known_char_names
-            ]
-
-            if filtered_candidates and available_budget > 60:
-                cand_block = (
-                    "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT:\n- "
-                    + ", ".join(filtered_candidates[:8])
-                    + "\n(dịch nghĩa chính xác hoặc phiên âm tự nhiên"
-                    + " phù hợp ngữ cảnh, không bỏ sót)"
-                )
-                tokens = estimate_tokens(cand_block)
-                if tokens <= available_budget:
-                    sections.append(cand_block)
-                    available_budget -= tokens
-
         speakers_in_batch = [u.speaker for u in batch_units if u.speaker]
         distinct_speakers = list(dict.fromkeys(speakers_in_batch))
-
         dialogue_speakers = [s for s in distinct_speakers if s.lower() not in _NON_DIALOGUE_TAGS]
         active_dialogue_speakers = list(dict.fromkeys(dialogue_speakers))
 
@@ -923,35 +999,129 @@ class ContextBuilder:
                     active_dialogue_speakers.append(item.speaker)
                     break
 
-        def _format_pronoun_pair(rule_text: str) -> str:
-            rule_clean = rule_text.strip()
-            if " - " in rule_clean and not rule_clean.startswith("xưng"):
-                parts = rule_clean.split(" - ", 1)
-                return f"xưng '{parts[0].strip()}', gọi '{parts[1].strip()}'"
-            return rule_clean
+        # =========================================================================
+        # LAYER 2: STABLE GAME-LEVEL CHARACTER PROFILES (Deterministic Stable Prefix)
+        # Positioned at token 0 of user_prompt immediately following system prompt.
+        # Deterministically sorted across all known characters in the visual novel
+        # so that KV cache prefix remains 100% identical across all batches in the game.
+        # =========================================================================
+        char_lines: list[str] = []
+        unique_profiles: dict[str, CharacterProfile] = {}
+        for p in characters.values():
+            tag_key = (p.tag or "").strip().lower()
+            if tag_key and tag_key not in unique_profiles:
+                unique_profiles[tag_key] = p
 
-        def _format_relational_rule(
-            p_spk: CharacterProfile,
-            p_tgt: CharacterProfile,
-            rule_text: str,
-        ) -> str:
-            rule_clean = rule_text.strip()
-            if " - " in rule_clean and not rule_clean.startswith("xưng"):
-                parts = [p.strip() for p in rule_clean.split(" - ", 1)]
-                self_p, target_p = parts[0], parts[1]
-                return (
-                    f"  * Khi {p_spk.display_name} ({p_spk.tag}) nói với "
-                    f"{p_tgt.display_name} ({p_tgt.tag}): Tự xưng (I/me/my) là '{self_p}', "
-                    f"gọi đối phương (you/your) là '{target_p}'. "
-                    f"(QUY TẮC: Mọi câu có 'you' [Do you..., Why are you...] "
-                    f"BẮT BUỘC dịch là '{target_p}', TUYỆT ĐỐI CẤM dịch 'you' thành '{self_p}')."
-                )
-            return (
-                f"  * {p_spk.display_name} ({p_spk.tag}) khi nói với "
-                f"{p_tgt.display_name} ({p_tgt.tag}): {rule_clean}"
+        for spk in distinct_speakers:
+            spk_clean = spk.strip().lower()
+            if spk_clean not in unique_profiles and spk_clean not in _NON_DIALOGUE_TAGS:
+                cp = char_map.get(spk) or char_map.get(spk_clean)
+                if cp is not None:
+                    tag_k = (cp.tag or "").strip().lower()
+                    if tag_k and tag_k not in unique_profiles:
+                        unique_profiles[tag_k] = cp
+
+        sorted_profiles = sorted(
+            unique_profiles.values(),
+            key=lambda p: (p.tag or p.display_name or "").lower(),
+        )
+
+        for char_prof in sorted_profiles:
+            g_raw = (char_prof.gender or "unknown").strip().lower()
+            gender_str = (
+                "Nữ" if g_raw == "female" else ("Nam" if g_raw == "male" else "Chưa rõ")
             )
+            char_info = f"- {char_prof.display_name} (tag: {char_prof.tag}): {gender_str}"
+            if char_prof.role:
+                char_info += f" | Vai trò: {char_prof.role}"
+            if char_prof.speech_style:
+                char_info += f" | Giọng: {char_prof.speech_style}"
+            if char_prof.pronoun_map:
+                pronoun_parts = []
+                for k, v in sorted(char_prof.pronoun_map.items()):
+                    if k in ("to_elder", "to_peer", "to_junior", "to_enemy"):
+                        label = {
+                            "to_elder": "với bề trên",
+                            "to_peer": "với bạn bè/đồng môn",
+                            "to_junior": "với bề dưới",
+                            "to_enemy": "với kẻ thù",
+                        }.get(k, k)
+                        pronoun_parts.append(f"{label} ({v})")
+                    else:
+                        tgt_char = char_map.get(k) or char_map.get(k.lower())
+                        tgt_name = (
+                            f"{tgt_char.display_name} ({k})"
+                            if tgt_char and tgt_char.display_name.lower() != k.lower()
+                            else k
+                        )
+                        pronoun_parts.append(f"với {tgt_name} ({_format_pronoun_pair(v)})")
+                if pronoun_parts:
+                    char_info += f" | Xưng hô: {'; '.join(pronoun_parts)}"
+            char_lines.append(char_info)
 
-        # Relational pronoun extraction between dialogue participants
+        if char_lines and available_budget > 80:
+            ch_block = "HỒ SƠ NHÂN VẬT & QUY TẮC XƯNG HÔ:\n" + "\n".join(char_lines)
+            tokens = estimate_tokens(ch_block)
+            if tokens <= available_budget:
+                sections.append(ch_block)
+                available_budget -= tokens
+            else:
+                batch_spk_set = {s.lower() for s in distinct_speakers}
+                fallback_lines = [
+                    line
+                    for line, prof in zip(char_lines, sorted_profiles, strict=False)
+                    if (prof.tag and prof.tag.lower() in batch_spk_set)
+                    or (prof.display_name and prof.display_name.lower() in batch_spk_set)
+                ]
+                if fallback_lines:
+                    fb_block = "HỒ SƠ NHÂN VẬT & QUY TẮC XƯNG HÔ:\n" + "\n".join(fallback_lines)
+                    fb_tokens = estimate_tokens(fb_block)
+                    if fb_tokens <= available_budget:
+                        sections.append(fb_block)
+                        available_budget -= fb_tokens
+
+        # =========================================================================
+        # LAYER 3: DYNAMIC BATCH CONTEXT (Ordered from Slowest to Fastest Changing)
+        # =========================================================================
+
+        # 3.1 Scene Macro Context (Semi-stable across scene)
+        resolved_macro: SceneMacroContext | None = scene_macro
+        if resolved_macro is None and scene_summary is not None:
+            if isinstance(scene_summary, SceneMacroContext):
+                resolved_macro = scene_summary
+            else:
+                loc = getattr(scene_summary, "location", "")
+                atmos = getattr(scene_summary, "atmosphere", "")
+                resolved_macro = SceneMacroContext(
+                    scene_id=scene_summary.scene_id,
+                    label=scene_summary.label,
+                    first_seq=scene_summary.first_seq,
+                    last_seq=scene_summary.last_seq,
+                    summary=scene_summary.summary,
+                    location=loc,
+                    atmosphere=atmos,
+                )
+
+        if (
+            resolved_macro is not None
+            and (resolved_macro.summary or resolved_macro.label or not resolved_macro.is_empty())
+            and available_budget > 80
+        ):
+            loc = resolved_macro.location
+            atmos = resolved_macro.atmosphere
+            if (not loc or not atmos) and resolved_macro.label:
+                inferred_loc, inferred_atmos = infer_scene_cues(resolved_macro.label)
+                loc = loc or inferred_loc
+                atmos = atmos or inferred_atmos
+                resolved_macro = resolved_macro.with_updates(location=loc, atmosphere=atmos)
+
+            sc_block = resolved_macro.format_prompt_header()
+            tokens = estimate_tokens(sc_block)
+            if tokens <= available_budget:
+                sections.append(sc_block)
+                available_budget -= tokens
+
+        # 3.2 Dynamic Interlocutor Dialogue Talking Pairs
         relational_lines: list[str] = []
         pairs_seen: set[tuple[str, str]] = set()
         for i in range(len(active_dialogue_speakers)):
@@ -994,89 +1164,51 @@ class ContextBuilder:
                 sections.append(rel_block)
                 available_budget -= tokens
 
-        char_lines: list[str] = []
-        for spk in sorted(set(distinct_speakers)):
-            char_prof = char_map.get(spk) or char_map.get(spk.lower())
-            if char_prof is not None:
-                g_raw = (char_prof.gender or "unknown").strip().lower()
-                gender_str = (
-                    "Nữ" if g_raw == "female" else ("Nam" if g_raw == "male" else "Chưa rõ")
+        # 3.3 Dynamic Batch Glossary & Proper Candidates
+        if glossary_matches and available_budget > 100:
+            gl_lines = ["THUẬT NGỮ BẮT BUỘC (GLOSSARY):"]
+            candidate_terms: list[str] = []
+            for g in glossary_matches:
+                if g.translation.strip():
+                    note_str = f" ({g.notes})" if g.notes else ""
+                    gl_lines.append(f"- {g.term} -> {g.translation}{note_str}")
+                elif g.kind in ("name", "location", "proper", "candidate") or not g.kind:
+                    candidate_terms.append(g.term)
+
+            if len(gl_lines) > 1:
+                gl_block = "\n".join(gl_lines)
+                tokens = estimate_tokens(gl_block)
+                if tokens <= available_budget:
+                    sections.append(gl_block)
+                    available_budget -= tokens
+
+            known_char_names = {
+                cp.display_name.lower() for cp in characters.values() if cp.display_name
+            } | set(characters.keys())
+
+            filtered_candidates = [
+                ct for ct in candidate_terms if ct.lower() not in known_char_names
+            ]
+
+            if filtered_candidates and available_budget > 60:
+                cand_block = (
+                    "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT:\n- "
+                    + ", ".join(filtered_candidates[:8])
+                    + "\n(dịch nghĩa chính xác hoặc phiên âm tự nhiên"
+                    + " phù hợp ngữ cảnh, không bỏ sót)"
                 )
-                char_info = f"- {char_prof.display_name} (tag: {char_prof.tag}): {gender_str}"
-                if char_prof.role:
-                    char_info += f" | Vai trò: {char_prof.role}"
-                if char_prof.speech_style:
-                    char_info += f" | Giọng: {char_prof.speech_style}"
-                if char_prof.pronoun_map:
-                    pronoun_parts = []
-                    for k, v in char_prof.pronoun_map.items():
-                        if k in ("to_elder", "to_peer", "to_junior", "to_enemy"):
-                            label = {
-                                "to_elder": "với bề trên",
-                                "to_peer": "với bạn bè/đồng môn",
-                                "to_junior": "với bề dưới",
-                                "to_enemy": "với kẻ thù",
-                            }.get(k, k)
-                            pronoun_parts.append(f"{label} ({v})")
-                        else:
-                            tgt_char = char_map.get(k) or char_map.get(k.lower())
-                            tgt_name = (
-                                f"{tgt_char.display_name} ({k})"
-                                if tgt_char and tgt_char.display_name.lower() != k.lower()
-                                else k
-                            )
-                            pronoun_parts.append(f"với {tgt_name} ({_format_pronoun_pair(v)})")
-                    if pronoun_parts:
-                        char_info += f" | Xưng hô: {'; '.join(pronoun_parts)}"
-                char_lines.append(char_info)
-        if char_lines and available_budget > 80:
-            ch_block = "HỒ SƠ NHÂN VẬT & QUY TẮC XƯNG HÔ:\n" + "\n".join(char_lines)
-            tokens = estimate_tokens(ch_block)
-            if tokens <= available_budget:
-                sections.append(ch_block)
-                available_budget -= tokens
+                tokens = estimate_tokens(cand_block)
+                if tokens <= available_budget:
+                    sections.append(cand_block)
+                    available_budget -= tokens
 
-        resolved_macro: SceneMacroContext | None = scene_macro
-        if resolved_macro is None and scene_summary is not None:
-            if isinstance(scene_summary, SceneMacroContext):
-                resolved_macro = scene_summary
-            else:
-                loc = getattr(scene_summary, "location", "")
-                atmos = getattr(scene_summary, "atmosphere", "")
-                resolved_macro = SceneMacroContext(
-                    scene_id=scene_summary.scene_id,
-                    label=scene_summary.label,
-                    first_seq=scene_summary.first_seq,
-                    last_seq=scene_summary.last_seq,
-                    summary=scene_summary.summary,
-                    location=loc,
-                    atmosphere=atmos,
-                )
-
-        if (
-            resolved_macro is not None
-            and (resolved_macro.summary or resolved_macro.label or not resolved_macro.is_empty())
-            and available_budget > 80
-        ):
-            loc = resolved_macro.location
-            atmos = resolved_macro.atmosphere
-            if (not loc or not atmos) and resolved_macro.label:
-                inferred_loc, inferred_atmos = infer_scene_cues(resolved_macro.label)
-                loc = loc or inferred_loc
-                atmos = atmos or inferred_atmos
-                resolved_macro = resolved_macro.with_updates(location=loc, atmosphere=atmos)
-
-            sc_block = resolved_macro.format_prompt_header()
-            tokens = estimate_tokens(sc_block)
-            if tokens <= available_budget:
-                sections.append(sc_block)
-                available_budget -= tokens
-
+        # 3.4 Lookback History
         if self.config.batch.lookback > 0 and lookback and available_budget > 60:
             lb_block, available_budget = self._compact_lookback(lookback, available_budget)
             if lb_block is not None:
                 sections.append(lb_block)
 
+        # 3.5 Fuzzy Matches / Translation Memory
         if fuzzy_matches and available_budget > 100:
             fz_lines: list[str] = []
             for uid, matches in fuzzy_matches.items():
@@ -1092,6 +1224,7 @@ class ContextBuilder:
                     sections.append(fz_block)
                     available_budget -= tokens
 
+        # 3.6 Batch Dialogue Lines
         sections.append(batch_text)
         return "\n\n".join(sections)
 
