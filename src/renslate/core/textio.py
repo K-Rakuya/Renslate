@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import codecs
 import shutil
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def normalize_nfc(text: str) -> str:
+    """Normalize text to Unicode Canonical Composition (NFC) with an ASCII fast-path gate."""
+    if text.isascii():
+        return text
+    return unicodedata.normalize("NFC", text)
+
 
 
 @dataclass(slots=True)
@@ -44,3 +53,11 @@ def write_atomic(path: Path, data: bytes) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+__all__ = [
+    "TextFile",
+    "normalize_nfc",
+    "read_text_file",
+    "write_atomic",
+]

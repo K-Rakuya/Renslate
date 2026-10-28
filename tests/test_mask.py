@@ -245,3 +245,18 @@ def test_auto_repair_strips_hallucinated_outer_tags() -> None:
     repaired = auto_repair_placeholders(m, raw_model_output)
     assert repaired == "⟦T1⟧Rơi vào...⟦L1⟧Thử lại.⟦/T1⟧"
     assert unmask(m, repaired) == "{color=#950000}Rơi vào...\nThử lại.{/color}"
+
+
+def test_auto_repair_placeholders_single_pass_healing() -> None:
+    src = "[a] [b] {b}Bold{/b} [c] [d] [e]"
+    m = mask(src)
+    # Token keys: V1 (a), V2 (b), T1 (Bold), V3 (c), V4 (d), V5 (e)
+    # Corrupt with all delimiter variants: [], {}, Lenticular, Tortoise Shell, Fullwidth and spaces
+    corrupt = (
+        "⟦ V1 ⟧ [V2] {T1}Đậm{ / T1 } và [unrelated_item] 【V3】 \u3014V4\u3015 \uff3bV5\uff3d"
+    )
+    repaired = auto_repair_placeholders(m, corrupt)
+    expected = "⟦V1⟧ ⟦V2⟧ ⟦T1⟧Đậm⟦/T1⟧ và [unrelated_item] ⟦V3⟧ ⟦V4⟧ ⟦V5⟧"
+    assert repaired == expected
+    # Ensure unrelated bracket was untouched
+    assert "[unrelated_item]" in repaired

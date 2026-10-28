@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import difflib
 import re
-import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 
 from renslate.core.db import Database, utc_timestamp
 from renslate.core.models import Origin, TMEntry
+from renslate.core.textio import normalize_nfc
 from renslate.engine.qa import clean_translation
 
 _WHITESPACE = re.compile(r"\s+")
@@ -22,7 +22,7 @@ _WHITESPACE = re.compile(r"\s+")
 
 def normalize_source(text: str) -> str:
     """Normalize source text for TM lookup: NFC form, stripped, collapsed whitespace."""
-    nfc = unicodedata.normalize("NFC", text)
+    nfc = normalize_nfc(text)
     collapsed = _WHITESPACE.sub(" ", nfc).strip()
     return collapsed
 

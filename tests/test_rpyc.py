@@ -4,6 +4,7 @@ import io
 import pickle
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +30,7 @@ from renslate.renpy.rpyc import (
     Python,
     RenpyRawItem,
     Return,
+    RpycArchive,
     RpycFile,
     Say,
     Scene,
@@ -729,3 +731,101 @@ def test_scan_project_incomplete_translation_fallback(tmp_path: Path) -> None:
     uids = {u.uid for u in scanner.units}
     assert "d:story_001" in uids
     assert (tl_dir / "story.rpy").is_file()
+
+
+def test_rpyc_archive_alias() -> None:
+    from renslate.renpy import RpycArchive as ExportedArchive
+    from renslate.renpy import RpycFile as ExportedFile
+
+    assert RpycArchive is RpycFile
+    assert ExportedArchive is ExportedFile
+
+
+def test_rpyc_context_manager_lifecycle(tmp_path: Path) -> None:
+    target = tmp_path / "test.rpyc"
+    _make_dummy_rpyc(target, slot1_stmts=["s1"], slot2_stmts=["s2"])
+
+    with RpycArchive(target) as rpyc:
+        assert rpyc._fh is not None
+        assert not rpyc._fh.closed
+        assert rpyc.read_slot(1) is not None
+        assert rpyc.read_slot(2) is not None
+        assert rpyc.read_md5() is not None
+
+    assert rpyc._fh is None
+
+
+def test_rpyc_syscall_reduction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "syscall_test.rpyc"
+    _make_dummy_rpyc(target, slot1_stmts=["s1"], slot2_stmts=["s2"])
+
+    open_count = 0
+    real_open = Path.open
+
+    def counting_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        nonlocal open_count
+        if self == target:
+            open_count += 1
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+
+    with RpycArchive(target) as rpyc:
+        rpyc.read_slot(1)
+        rpyc.read_slot(2)
+        rpyc.read_md5()
+
+    assert open_count == 1
+
+
+def test_rpyc_fallback_after_close(tmp_path: Path) -> None:
+    target = tmp_path / "fallback.rpyc"
+    _make_dummy_rpyc(target, slot1_stmts=["s1"], slot2_stmts=["s2"])
+
+    rpyc = RpycFile(target)
+    assert rpyc._fh is not None
+    rpyc.close()
+    assert rpyc._fh is None
+
+    # Fallback to transient open
+    s1 = rpyc.read_slot(1)
+    assert s1 is not None
+    s2 = rpyc.read_slot(2)
+    assert s2 is not None
+    md5 = rpyc.read_md5()
+    assert md5 is not None
+    assert rpyc._fh is None
+
+
+def test_rpyc_reentrant_context(tmp_path: Path) -> None:
+    target = tmp_path / "reentrant.rpyc"
+    _make_dummy_rpyc(target, slot1_stmts=["s1"])
+
+    with RpycArchive(target) as rpyc:
+        assert rpyc._context_depth == 1
+        assert rpyc._fh is not None
+        with rpyc:
+            assert rpyc._context_depth == 2
+            assert rpyc.read_slot(1) is not None
+        assert rpyc._context_depth == 1
+        assert rpyc._fh is not None
+    assert rpyc._context_depth == 0
+    assert rpyc._fh is None
+
+
+def test_rpyc_thread_safety(tmp_path: Path) -> None:
+    import concurrent.futures
+
+    target = tmp_path / "threaded.rpyc"
+    _make_dummy_rpyc(target, slot1_stmts=["thread_s1"], slot2_stmts=["thread_s2"])
+
+    with RpycArchive(target) as rpyc:
+
+        def read_worker(slot_id: int) -> bytes | None:
+            return rpyc.read_slot(slot_id)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futs = [executor.submit(read_worker, 1 if i % 2 == 0 else 2) for i in range(100)]
+            results = [f.result() for f in futs]
+
+        assert all(r is not None for r in results)

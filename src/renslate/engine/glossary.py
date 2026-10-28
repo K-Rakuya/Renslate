@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any
 
 from renslate.core.db import Database
 from renslate.core.models import GlossaryEntry
+from renslate.core.textio import normalize_nfc
 
 _SENTENCE_START = re.compile(r'(?:^|[.!?…]\s+)(?:["\']|\b)([A-Z][a-z]+)\b')
 _CAPITALIZED_PHRASE = re.compile(r"\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*)*\b")
@@ -816,7 +816,7 @@ def mine_glossary_candidates(
 
     for text in sources:
         # Normalize
-        norm = unicodedata.normalize("NFC", text)
+        norm = normalize_nfc(text)
 
         # Exclude the first capitalized word in sentences
         sentence_starts = set(_SENTENCE_START.findall(norm))

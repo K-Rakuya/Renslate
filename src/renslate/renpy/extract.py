@@ -13,7 +13,7 @@ from renslate.core.db import Database, utc_timestamp
 from renslate.core.errors import MarkupError, ProjectError
 from renslate.core.models import LOCKED_ORIGINS, Origin, Slot, Status, Unit, UnitKind
 from renslate.core.project import Project
-from renslate.core.textio import read_text_file, write_atomic
+from renslate.core.textio import normalize_nfc, read_text_file, write_atomic
 from renslate.renpy.literals import parse_python_string, quote_python_text
 from renslate.renpy.mask import mask
 from renslate.renpy.parser import (
@@ -129,6 +129,7 @@ def sync_project_ui_strings(project: Project, scanner: TranslationScanner) -> in
                     val = parse_python_string(lit)
                     if not val or not _has_human_text(val):
                         continue
+                    val = normalize_nfc(val)
 
                     ref = f"{rel}:{idx}"
                     if val not in known_sources and val not in seen_new:
@@ -200,7 +201,7 @@ def _scan_raw_script(
         say = parse_say(stripped)
         if say is not None and say.text:
             speaker = say.speaker
-            source = say.text
+            source = normalize_nfc(say.text)
             ref = f"{file}:{idx}"
 
             # If previous unit existed at this exact ref with different source, inherit UID
