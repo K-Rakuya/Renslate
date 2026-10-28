@@ -439,3 +439,101 @@ def test_realign_outer_tags_mismatched_size(tmp_path: Path) -> None:
         assert u1.status == Status.TRANSLATED
         expected = "{size=50}{font=fonts/chinese-rocks.otf}Sau đó, vào ban đêm.{/font}{/size}"
         assert u1.target == expected
+
+
+def test_dialogue_knapsack_clustering_preserves_turn_pairs() -> None:
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "How are you?", Status.PENDING, speaker="Hero"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "I am fine.", Status.PENDING, speaker="Heroine"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Shall we go?", Status.PENDING, speaker="Hero"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "Yes, let us go.", Status.PENDING, speaker="Heroine"),
+        Unit("d:5", UnitKind.DIALOGUE, 5, "Follow me.", Status.PENDING, speaker="Hero"),
+        Unit("d:6", UnitKind.DIALOGUE, 6, "Right behind you.", Status.PENDING, speaker="Heroine"),
+    ]
+    # max_lines=4 can accommodate 2 full turn pairs (4 lines)
+    batches = partition_batches(units, max_lines=4, max_tokens=1000)
+    assert len(batches) == 2
+    assert [u.uid for u in batches[0]] == ["d:1", "d:2", "d:3", "d:4"]
+    assert [u.uid for u in batches[1]] == ["d:5", "d:6"]
+
+
+def test_scene_hard_isolation_even_with_short_scenes() -> None:
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "Line 1", Status.PENDING, label="short_scene_a"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "Line 2", Status.PENDING, label="short_scene_a"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Line 3", Status.PENDING, label="short_scene_b"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "Line 4", Status.PENDING, label="short_scene_b"),
+    ]
+    batches = partition_batches(units, max_lines=20, max_tokens=1000)
+    assert len(batches) == 2
+    assert [u.uid for u in batches[0]] == ["d:1", "d:2"]
+    assert [u.uid for u in batches[1]] == ["d:3", "d:4"]
+
+
+def test_file_hard_isolation_across_different_files() -> None:
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "File A line 1", Status.PENDING, file="script_a.rpy"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "File A line 2", Status.PENDING, file="script_a.rpy"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "File B line 1", Status.PENDING, file="script_b.rpy"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "File B line 2", Status.PENDING, file="script_b.rpy"),
+    ]
+    batches = partition_batches(units, max_lines=20, max_tokens=1000)
+    assert len(batches) == 2
+    assert [u.uid for u in batches[0]] == ["d:1", "d:2"]
+    assert [u.uid for u in batches[1]] == ["d:3", "d:4"]
+
+
+def test_oversized_cluster_subdivision() -> None:
+    # 25 lines of continuous narration from a single speaker
+    units = [
+        Unit(
+            f"d:{i}",
+            UnitKind.DIALOGUE,
+            i,
+            f"Monologue sentence {i}",
+            Status.PENDING,
+            speaker="Narr",
+        )
+        for i in range(25)
+    ]
+    batches = partition_batches(units, max_lines=10, max_tokens=1000)
+    assert len(batches) == 3
+    assert len(batches[0]) == 10
+    assert len(batches[1]) == 10
+    assert len(batches[2]) == 5
+    assert sum(len(b) for b in batches) == 25
+
+
+def test_pipeline_passes_batch_grammar_to_llm(tmp_path: Path) -> None:
+    root = tmp_path / "game_root"
+    (root / "game").mkdir(parents=True)
+    project = Project.create(root)
+    cfg = Config()
+
+    with project.open_db() as db:
+        db.save_unit(Unit("d:1", UnitKind.DIALOGUE, 1, "Hello world", Status.PENDING))
+
+    captured_grammar: str | None = None
+
+    def mock_complete_json(
+        system: str,
+        user: str,
+        schema: dict[str, Any] | None = None,
+        grammar: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], int, int]:
+        nonlocal captured_grammar
+        captured_grammar = grammar
+        return ({"d:1": "Xin chào thế giới"}, 10, 5)
+
+    with (
+        project.open_db() as db,
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+    ):
+        pipeline = TranslationPipeline(project, db, cfg)
+        stats = pipeline.run()
+
+        assert stats.failed == 0
+        assert captured_grammar is not None
+        assert r'\"d:1\"' in captured_grammar
+
