@@ -95,10 +95,33 @@ def test_slots_replacement_and_obsolescence(db: Database) -> None:
     assert db.units()["a"].status is Status.PENDING
 
 
-def test_slot_positions_are_unique(db: Database) -> None:
+def test_slot_positions_allow_multiple_slots_per_line(db: Database) -> None:
     db.save_unit(make_unit("a"))
-    with pytest.raises(sqlite3.IntegrityError):
-        db.replace_slots([Slot("a", "f.rpy", 5, 3, "x"), Slot("a", "f.rpy", 5, 3, "y")])
+    db.save_unit(make_unit("b"))
+    # Multiple distinct slots on the same file and line are valid in Ren'Py scripts
+    db.replace_slots([Slot("a", "f.rpy", 5, 3, "x"), Slot("b", "f.rpy", 5, 3, "y")])
+    assert db.count_slots() == 2
+
+
+def test_migration_4_allows_multiple_slots(tmp_path: Path) -> None:
+    path = tmp_path / "project_mig.db"
+    conn = sqlite3.connect(path)
+    # Apply migrations 0 to 2 (legacy schema where slots had UNIQUE (file, line))
+    conn.executescript(MIGRATIONS[0])
+    conn.executescript(MIGRATIONS[1])
+    conn.executescript(MIGRATIONS[2])
+    conn.execute("PRAGMA user_version = 3;")
+    conn.commit()
+    conn.close()
+
+    # Opening with Database runs migration 4
+    db = Database.open(path)
+    assert db.schema_version == len(MIGRATIONS)
+    db.save_unit(make_unit("a"))
+    db.save_unit(make_unit("b"))
+    db.replace_slots([Slot("a", "f.rpy", 10, 8, "x"), Slot("b", "f.rpy", 10, 8, "y")])
+    assert db.count_slots() == 2
+    db.close()
 
 
 def test_apply_targets_exclude_untranslated_and_obsolete(db: Database) -> None:

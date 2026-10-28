@@ -65,10 +65,10 @@ MIGRATIONS: tuple[str, ...] = (
         file TEXT NOT NULL,
         line INTEGER NOT NULL,
         anchor_line INTEGER NOT NULL,
-        fingerprint TEXT NOT NULL,
-        UNIQUE (file, line)
+        fingerprint TEXT NOT NULL
     );
     CREATE INDEX idx_slots_uid ON slots (uid);
+    CREATE INDEX idx_slots_file_line ON slots (file, line);
     """,
     """
     CREATE TABLE tm (
@@ -138,6 +138,22 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE characters ADD COLUMN socioeconomic_status TEXT NOT NULL DEFAULT '';
     ALTER TABLE characters ADD COLUMN sample_dialogue TEXT NOT NULL DEFAULT '[]';
     """,
+    """
+    CREATE TABLE IF NOT EXISTS slots_new (
+        id INTEGER PRIMARY KEY,
+        uid TEXT NOT NULL REFERENCES units (uid) ON DELETE CASCADE,
+        file TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        anchor_line INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO slots_new (id, uid, file, line, anchor_line, fingerprint)
+    SELECT id, uid, file, line, anchor_line, fingerprint FROM slots;
+    DROP TABLE slots;
+    ALTER TABLE slots_new RENAME TO slots;
+    CREATE INDEX IF NOT EXISTS idx_slots_uid ON slots (uid);
+    CREATE INDEX IF NOT EXISTS idx_slots_file_line ON slots (file, line);
+    """,
 )
 
 _UNIT_COLUMNS = (
@@ -191,7 +207,7 @@ _SQL_UPDATE_TRANSLATION = (
 )
 _SQL_DELETE_SLOTS = "DELETE FROM slots"
 _SQL_INSERT_SLOT = (
-    "INSERT INTO slots (uid, file, line, anchor_line, fingerprint) VALUES (?, ?, ?, ?, ?)"
+    "INSERT OR IGNORE INTO slots (uid, file, line, anchor_line, fingerprint) VALUES (?, ?, ?, ?, ?)"
 )
 _SQL_UPDATE_SLOT_FINGERPRINT = "UPDATE slots SET fingerprint = ? WHERE file = ? AND line = ?"
 _SQL_COUNT_SLOTS = "SELECT COUNT(*) FROM slots"
