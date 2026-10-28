@@ -7,13 +7,14 @@ import re
 import uuid
 from collections import deque
 from collections.abc import Callable, MutableSequence, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
 from renslate.core.config import Config
 from renslate.core.db import Database, utc_timestamp
 from renslate.core.errors import LLMError
-from renslate.core.models import BatchLog, Origin, Status, Unit, UnitKind
+from renslate.core.models import BatchLog, GlossaryEntry, Origin, Status, Unit, UnitKind
 from renslate.core.project import Project
 from renslate.engine.context import (
     ContextBuilder,
@@ -25,7 +26,7 @@ from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
-from renslate.engine.tm import TranslationMemory
+from renslate.engine.tm import FuzzyMatch, TranslationMemory
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
 from renslate.renpy.mask import (
     auto_repair_placeholders,
@@ -72,6 +73,20 @@ class TranslationStats:
     tokens_in: int = 0
     tokens_out: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _PreparedBatch:
+    batch: Sequence[Unit]
+    batch_id: str
+    glossary_matches: Sequence[GlossaryEntry]
+    fuzzy_hints: dict[str, list[FuzzyMatch]]
+    active_scene: Any
+    system_prompt: str
+    batch_schema: dict[str, Any]
+    batch_grammar: str
+    budget: int
+    single_key: str | None
 
 
 @dataclass(slots=True)
@@ -433,6 +448,7 @@ class TranslationPipeline:
         # Initialize InterlocutorResolver
         self.resolver = resolver if resolver is not None else InterlocutorResolver()
         self._current_scene_label: str | None = None
+        self._current_prepared: _PreparedBatch | None = None
 
         # Custom style guide if present
         style_guide = ""
@@ -511,65 +527,96 @@ class TranslationPipeline:
         processed_units = 0
         total_to_process = len(need_llm)
 
-        for batch_idx, batch in enumerate(batches, start=1):
-            if progress_cb:
-                progress_cb(
-                    processed_units,
-                    total_to_process,
-                    f"Đang dịch lô {batch_idx}/{len(batches)} ({len(batch)} dòng)...",
-                )
-
-            failing_units = self._translate_batch(batch, lookback_buffer, stats)
-            if failing_units and len(batch) > 1:
-                # If multiple lines failed, retry in smaller sub-batches first
-                if len(failing_units) > 3:
-                    _LOG.warning(
-                        "Lô %d có %d dòng thất bại QA/unmask, thử lại theo cụm nhỏ...",
-                        batch_idx,
-                        len(failing_units),
+        if len(batches) <= 1:
+            for batch_idx, batch in enumerate(batches, start=1):
+                if progress_cb:
+                    progress_cb(
+                        processed_units,
+                        total_to_process,
+                        f"Đang dịch lô {batch_idx}/{len(batches)} ({len(batch)} dòng)...",
                     )
-                    sub_size = max(2, min(6, len(failing_units) // 2))
-                    still_failing: list[Unit] = []
-                    for k in range(0, len(failing_units), sub_size):
-                        sub_chunk = failing_units[k : k + sub_size]
-                        retry_fails = self._translate_batch(sub_chunk, lookback_buffer, stats)
-                        still_failing.extend(retry_fails)
-                    failing_units = still_failing
 
-                if failing_units:
-                    _LOG.warning(
-                        "Lô %d có %d dòng thất bại sau thử lại cụm, chuyển sang dịch đơn lẻ...",
-                        batch_idx,
-                        len(failing_units),
+                failing_units = self._translate_batch(batch, lookback_buffer, stats)
+                if failing_units and len(batch) > 1:
+                    if len(failing_units) > 3:
+                        _LOG.warning(
+                            "Lô %d có %d dòng thất bại QA/unmask, thử lại theo cụm nhỏ...",
+                            batch_idx,
+                            len(failing_units),
+                        )
+                        sub_size = max(2, min(6, len(failing_units) // 2))
+                        still_failing: list[Unit] = []
+                        for k in range(0, len(failing_units), sub_size):
+                            sub_chunk = failing_units[k : k + sub_size]
+                            retry_fails = self._translate_batch(sub_chunk, lookback_buffer, stats)
+                            still_failing.extend(retry_fails)
+                        failing_units = still_failing
+
+                    if failing_units:
+                        _LOG.warning(
+                            "Lô %d có %d dòng thất bại sau thử lại cụm, chuyển sang dịch đơn lẻ...",
+                            batch_idx,
+                            len(failing_units),
+                        )
+                        for single_unit in failing_units:
+                            self._translate_batch([single_unit], lookback_buffer, stats)
+
+                processed_units += len(batch)
+
+            return stats
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            next_prep_future = executor.submit(self._prepare_batch, batches[0])
+
+            for batch_idx, batch in enumerate(batches, start=1):
+                if progress_cb:
+                    progress_cb(
+                        processed_units,
+                        total_to_process,
+                        f"Đang dịch lô {batch_idx}/{len(batches)} ({len(batch)} dòng)...",
                     )
-                    for single_unit in failing_units:
-                        self._translate_batch([single_unit], lookback_buffer, stats)
 
-            processed_units += len(batch)
+                prepared = next_prep_future.result()
+                if batch_idx < len(batches):
+                    next_prep_future = executor.submit(self._prepare_batch, batches[batch_idx])
+
+                self._current_prepared = prepared
+                failing_units = self._translate_batch(batch, lookback_buffer, stats)
+                if failing_units and len(batch) > 1:
+                    if len(failing_units) > 3:
+                        _LOG.warning(
+                            "Lô %d có %d dòng thất bại QA/unmask, thử lại theo cụm nhỏ...",
+                            batch_idx,
+                            len(failing_units),
+                        )
+                        sub_size = max(2, min(6, len(failing_units) // 2))
+                        pipelined_still_failing: list[Unit] = []
+                        for k in range(0, len(failing_units), sub_size):
+                            sub_chunk = failing_units[k : k + sub_size]
+                            retry_fails = self._translate_batch(sub_chunk, lookback_buffer, stats)
+                            pipelined_still_failing.extend(retry_fails)
+                        failing_units = pipelined_still_failing
+
+                    if failing_units:
+                        _LOG.warning(
+                            "Lô %d có %d dòng thất bại sau thử lại cụm, chuyển sang dịch đơn lẻ...",
+                            batch_idx,
+                            len(failing_units),
+                        )
+                        for single_unit in failing_units:
+                            self._translate_batch([single_unit], lookback_buffer, stats)
+
+                processed_units += len(batch)
 
         return stats
 
-    def _translate_batch(
-        self,
-        batch: Sequence[Unit],
-        lookback: MutableSequence[LookbackItem],
-        stats: TranslationStats,
-    ) -> list[Unit]:
-        """Translate a single batch of units, validate output, and commit to DB.
-
-        Returns a list of units that failed validation/translation and require individual retry.
-        """
+    def _prepare_batch(self, batch: Sequence[Unit]) -> _PreparedBatch:
         batch_id = f"b_{uuid.uuid4().hex[:12]}"
-        batch_label = batch[0].label if batch else None
-        if batch_label != self._current_scene_label:
-            self.resolver.reset()
-            self._current_scene_label = batch_label
-
         texts = [u.masked_source or u.source for u in batch]
         glossary_matches = self.glossary.match_batch(texts)
 
         # Collect fuzzy matches for prompt hints
-        fuzzy_hints = {}
+        fuzzy_hints: dict[str, list[FuzzyMatch]] = {}
         for u in batch:
             matches = self.tm.lookup_fuzzy(
                 u.source, threshold=self.config.tm.fuzzy_threshold, max_results=1
@@ -590,16 +637,6 @@ class TranslationPipeline:
                     active_scene = sc
                     break
 
-        user_prompt = self.context.build_user_prompt(
-            batch_units=batch,
-            glossary_matches=glossary_matches,
-            characters=self.characters,
-            scene_summary=active_scene,
-            lookback=list(lookback),
-            fuzzy_matches=fuzzy_hints,
-            graph=self.graph,
-            resolver=self.resolver,
-        )
         system_prompt = self.context.build_system_prompt()
 
         has_cjk_source = any(_CJK_PATTERN.search(u.source) for u in batch)
@@ -614,17 +651,70 @@ class TranslationPipeline:
             "additionalProperties": False,
         }
         batch_grammar = generate_batch_gbnf([u.uid for u in batch], allow_cjk=has_cjk_source)
+        budget = ContextBuilder.calculate_output_budget(len(batch))
+        single_key = batch[0].uid if len(batch) == 1 else None
+
+        return _PreparedBatch(
+            batch=batch,
+            batch_id=batch_id,
+            glossary_matches=glossary_matches,
+            fuzzy_hints=fuzzy_hints,
+            active_scene=active_scene,
+            system_prompt=system_prompt,
+            batch_schema=batch_schema,
+            batch_grammar=batch_grammar,
+            budget=budget,
+            single_key=single_key,
+        )
+
+    def _translate_batch(
+        self,
+        batch: Sequence[Unit],
+        lookback: MutableSequence[LookbackItem],
+        stats: TranslationStats,
+    ) -> list[Unit]:
+        """Translate a single batch of units, validate output, and commit to DB.
+
+        Returns a list of units that failed validation/translation and require individual retry.
+        """
+        prepared = getattr(self, "_current_prepared", None)
+        self._current_prepared = None
+        if prepared is None or prepared.batch is not batch:
+            prepared = self._prepare_batch(batch)
+        return self._execute_prepared_batch(prepared, lookback, stats)
+
+    def _execute_prepared_batch(
+        self,
+        prep: _PreparedBatch,
+        lookback: MutableSequence[LookbackItem],
+        stats: TranslationStats,
+    ) -> list[Unit]:
+        batch = prep.batch
+        batch_id = prep.batch_id
+        batch_label = batch[0].label if batch else None
+        if batch_label != self._current_scene_label:
+            self.resolver.reset()
+            self._current_scene_label = batch_label
+
+        user_prompt = self.context.build_user_prompt(
+            batch_units=batch,
+            glossary_matches=prep.glossary_matches,
+            characters=self.characters,
+            scene_summary=prep.active_scene,
+            lookback=list(lookback),
+            fuzzy_matches=prep.fuzzy_hints,
+            graph=self.graph,
+            resolver=self.resolver,
+        )
 
         try:
-            budget = ContextBuilder.calculate_output_budget(len(batch))
-            single_key = batch[0].uid if len(batch) == 1 else None
             result_map, p_tokens, c_tokens = self.llm.complete_json(
-                system_prompt,
+                prep.system_prompt,
                 user_prompt,
-                max_tokens=budget,
-                grammar=batch_grammar,
-                schema=batch_schema,
-                fallback_single_key=single_key,
+                max_tokens=prep.budget,
+                grammar=prep.batch_grammar,
+                schema=prep.batch_schema,
+                fallback_single_key=prep.single_key,
             )
             stats.tokens_in += p_tokens
             stats.tokens_out += c_tokens
