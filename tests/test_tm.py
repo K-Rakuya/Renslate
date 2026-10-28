@@ -53,3 +53,18 @@ def test_tm_reload_persists(db: Database) -> None:
     # Re-instantiate from same DB
     tm2 = TranslationMemory(db)
     assert tm2.lookup_exact("Save Game") == "Lưu game"
+
+
+def test_l1_bloom_filter_invariants() -> None:
+    from renslate.engine.tm import _L1BloomFilter
+
+    bloom = _L1BloomFilter()
+    assert not bloom.contains("hello")
+    assert not bloom.contains("world")
+
+    bloom.add("hello")
+    assert bloom.contains("hello")
+    assert not bloom.contains("hello_world_unseen")
+
+    bloom.clear()
+    assert not bloom.contains("hello")
