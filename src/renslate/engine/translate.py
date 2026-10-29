@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import Callable, MutableSequence, Sequence
@@ -32,9 +33,10 @@ from renslate.engine.context import (
 )
 from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
+from renslate.engine.knowledge import refresh_character_genders
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
-from renslate.engine.knowledge import refresh_character_genders
+from renslate.engine.repair import RetryLadder, UnitFailure
 from renslate.engine.scenes import load_scene_contexts
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
@@ -358,9 +360,9 @@ def partition_batches(
         if prev_u is not None:
             kind_changed = u.kind != prev_u.kind
             label_changed = (u.label or "").strip() != (prev_u.label or "").strip()
-            file_changed = (
-                _extract_unit_file(u) or ""
-            ).strip() != (_extract_unit_file(prev_u) or "").strip()
+            file_changed = (_extract_unit_file(u) or "").strip() != (
+                _extract_unit_file(prev_u) or ""
+            ).strip()
 
             if kind_changed or (isolate_scenes and (label_changed or file_changed)):
                 if curr_slice:
@@ -392,8 +394,7 @@ def partition_batches(
             c_lines = len(c_units)
 
             if current_batch and (
-                len(current_batch) + c_lines > max_lines
-                or current_tokens + c_tokens > max_tokens
+                len(current_batch) + c_lines > max_lines or current_tokens + c_tokens > max_tokens
             ):
                 batches.append(current_batch)
                 current_batch = []
@@ -436,6 +437,7 @@ class TranslationPipeline:
         self._scene_ctx = load_scene_contexts(db, self.scenes)
         self.qa = QAChecker(max_length_ratio=config.qa.max_length_ratio)
         self.llm = LLMClient(config.llm)
+        self._retry_ladder = RetryLadder()
 
         # Initialize RelationshipGraph (injected, synced from json, or loaded from db)
         if graph is not None:
@@ -479,8 +481,8 @@ class TranslationPipeline:
         """
         try:
             refresh_character_genders(self.db)
-        except Exception:  # best-effort: never block translation on a heuristic
-            pass
+        except sqlite3.Error as error:
+            _LOG.warning("Không cập nhật được giới tính nhân vật từ kịch bản: %s", error)
         self.characters = self.db.get_characters()
         self.scenes = self.db.get_scenes()
         self._scene_ctx = load_scene_contexts(self.db, self.scenes)
@@ -573,30 +575,7 @@ class TranslationPipeline:
                         f"Đang dịch lô {batch_idx}/{len(batches)} ({len(batch)} dòng)...",
                     )
 
-                failing_units = self._translate_batch(batch, lookback_buffer, stats)
-                if failing_units and len(batch) > 1:
-                    if len(failing_units) > 3:
-                        _LOG.warning(
-                            "Lô %d có %d dòng thất bại QA/unmask, thử lại theo cụm nhỏ...",
-                            batch_idx,
-                            len(failing_units),
-                        )
-                        sub_size = max(2, min(6, len(failing_units) // 2))
-                        still_failing: list[Unit] = []
-                        for k in range(0, len(failing_units), sub_size):
-                            sub_chunk = failing_units[k : k + sub_size]
-                            retry_fails = self._translate_batch(sub_chunk, lookback_buffer, stats)
-                            still_failing.extend(retry_fails)
-                        failing_units = still_failing
-
-                    if failing_units:
-                        _LOG.warning(
-                            "Lô %d có %d dòng thất bại sau thử lại cụm, chuyển sang dịch đơn lẻ...",
-                            batch_idx,
-                            len(failing_units),
-                        )
-                        for single_unit in failing_units:
-                            self._translate_batch([single_unit], lookback_buffer, stats)
+                self._settle_batch(batch, batch_idx, lookback_buffer, stats)
 
                 processed_units += len(batch)
 
@@ -618,30 +597,7 @@ class TranslationPipeline:
                     next_prep_future = executor.submit(self._prepare_batch, batches[batch_idx])
 
                 self._current_prepared = prepared
-                failing_units = self._translate_batch(batch, lookback_buffer, stats)
-                if failing_units and len(batch) > 1:
-                    if len(failing_units) > 3:
-                        _LOG.warning(
-                            "Lô %d có %d dòng thất bại QA/unmask, thử lại theo cụm nhỏ...",
-                            batch_idx,
-                            len(failing_units),
-                        )
-                        sub_size = max(2, min(6, len(failing_units) // 2))
-                        pipelined_still_failing: list[Unit] = []
-                        for k in range(0, len(failing_units), sub_size):
-                            sub_chunk = failing_units[k : k + sub_size]
-                            retry_fails = self._translate_batch(sub_chunk, lookback_buffer, stats)
-                            pipelined_still_failing.extend(retry_fails)
-                        failing_units = pipelined_still_failing
-
-                    if failing_units:
-                        _LOG.warning(
-                            "Lô %d có %d dòng thất bại sau thử lại cụm, chuyển sang dịch đơn lẻ...",
-                            batch_idx,
-                            len(failing_units),
-                        )
-                        for single_unit in failing_units:
-                            self._translate_batch([single_unit], lookback_buffer, stats)
+                self._settle_batch(batch, batch_idx, lookback_buffer, stats)
 
                 processed_units += len(batch)
 
@@ -707,28 +663,45 @@ class TranslationPipeline:
             ),
         )
 
+    def _settle_batch(
+        self,
+        batch: Sequence[Unit],
+        batch_idx: int,
+        lookback: MutableSequence[LookbackItem],
+        stats: TranslationStats,
+    ) -> None:
+        failures = self._translate_batch(batch, lookback, stats)
+
+        def attempt(units: Sequence[Unit], feedback: str) -> list[UnitFailure]:
+            return self._translate_batch(units, lookback, stats, retry_feedback=feedback)
+
+        def announce(stage: str, count: int) -> None:
+            _LOG.warning(
+                "Lô %d có %d dòng thất bại, thử lại theo bậc '%s'", batch_idx, count, stage
+            )
+
+        self._retry_ladder.run(batch, failures, attempt, announce)
+
     def _translate_batch(
         self,
         batch: Sequence[Unit],
         lookback: MutableSequence[LookbackItem],
         stats: TranslationStats,
-    ) -> list[Unit]:
-        """Translate a single batch of units, validate output, and commit to DB.
-
-        Returns a list of units that failed validation/translation and require individual retry.
-        """
+        retry_feedback: str = "",
+    ) -> list[UnitFailure]:
         prepared = getattr(self, "_current_prepared", None)
         self._current_prepared = None
         if prepared is None or prepared.batch is not batch:
             prepared = self._prepare_batch(batch)
-        return self._execute_prepared_batch(prepared, lookback, stats)
+        return self._execute_prepared_batch(prepared, lookback, stats, retry_feedback)
 
     def _execute_prepared_batch(
         self,
         prep: _PreparedBatch,
         lookback: MutableSequence[LookbackItem],
         stats: TranslationStats,
-    ) -> list[Unit]:
+        retry_feedback: str = "",
+    ) -> list[UnitFailure]:
         batch = prep.batch
         batch_id = prep.batch_id
         batch_label = batch[0].label if batch else None
@@ -746,6 +719,7 @@ class TranslationPipeline:
             fuzzy_matches=prep.fuzzy_hints,
             graph=self.graph,
             resolver=self.resolver,
+            retry_feedback=retry_feedback,
         )
 
         try:
@@ -776,10 +750,10 @@ class TranslationPipeline:
                 self.db.mark_failed(batch[0].uid, f"LLM error: {error}")
                 stats.failed += 1
                 return []
-            return list(batch)
+            return [UnitFailure(u, "llm_error", str(error)) for u in batch]
 
         unit_updates: list[tuple[Unit, str, tuple[str, ...], Status]] = []
-        failed_units: list[Unit] = []
+        failed_units: list[UnitFailure] = []
 
         res_by_key: dict[str, str] = {}
         for k, v in result_map.items():
@@ -828,7 +802,9 @@ class TranslationPipeline:
 
             if raw_target is None:
                 _LOG.info("Dòng %s thiếu bản dịch trong phản hồi của LLM.", u.uid)
-                failed_units.append(u)
+                failed_units.append(
+                    UnitFailure(u, "missing_result", "Dòng này bị thiếu trong phản hồi JSON.")
+                )
                 prev_u = u
                 continue
 
@@ -850,7 +826,9 @@ class TranslationPipeline:
                             u.source,
                             cleaned,
                         )
-                        failed_units.append(u)
+                        failed_units.append(
+                            UnitFailure(u, "unmask_error", str(unmask_err), cleaned)
+                        )
                         prev_u = u
                         continue
                 else:
@@ -901,7 +879,11 @@ class TranslationPipeline:
                                 [i.code for i in raw_issues],
                                 cleaned,
                             )
-                            failed_units.append(u)
+                            failed_units.append(
+                                UnitFailure(
+                                    u, "raw_markup", ", ".join(i.code for i in raw_issues), cleaned
+                                )
+                            )
                             prev_u = u
                             continue
                     final_target = cleaned
@@ -924,7 +906,11 @@ class TranslationPipeline:
                             [i.code for i in raw_issues],
                             cleaned,
                         )
-                        failed_units.append(u)
+                        failed_units.append(
+                            UnitFailure(
+                                u, "raw_markup", ", ".join(i.code for i in raw_issues), cleaned
+                            )
+                        )
                         prev_u = u
                         continue
                 final_target = cleaned
@@ -955,9 +941,8 @@ class TranslationPipeline:
                     target_prof = self.characters.get(target_tag) or self.characters.get(
                         target_tag.lower()
                     )
-                    edge = (
-                        self.graph.get_edge(spk_clean, target_tag)
-                        or self.graph.get_edge(spk_clean.lower(), target_tag.lower())
+                    edge = self.graph.get_edge(spk_clean, target_tag) or self.graph.get_edge(
+                        spk_clean.lower(), target_tag.lower()
                     )
                     if not edge and spk_prof:
                         edge = self.graph.get_edge(spk_prof.tag, target_tag) or (
@@ -1036,7 +1021,14 @@ class TranslationPipeline:
                     u.source,
                     final_target,
                 )
-                failed_units.append(u)
+                failed_units.append(
+                    UnitFailure(
+                        u,
+                        "qa_error",
+                        "; ".join(i.message for i in qa_issues if i.severity == "error") or reason,
+                        final_target,
+                    )
+                )
                 prev_u = u
                 continue
 
@@ -1075,13 +1067,7 @@ class TranslationPipeline:
             return []
 
         if len(batch) == 1:
-            # Single unit failed
-            fail_reason = (
-                "missing_result"
-                if (not result_map or batch[0].uid not in result_map)
-                else "qa_or_unmask_error"
-            )
-            self.db.mark_failed(batch[0].uid, fail_reason)
+            self.db.mark_failed(batch[0].uid, failed_units[0].code)
             stats.failed += 1
             return []
 

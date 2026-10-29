@@ -226,7 +226,8 @@ class InterlocutorResolver:
             others = {
                 a.strip()
                 for a in active_speakers
-                if a and a.strip().lower() != spk_lower
+                if a
+                and a.strip().lower() != spk_lower
                 and a.strip().lower() not in _NON_DIALOGUE_TAGS
             }
             if len(others) == 1:
@@ -724,9 +725,7 @@ def estimate_tokens(text: str, is_vietnamese: bool = False) -> int:
         ):
             cjk += 1
         elif is_vietnamese or (
-            0x1EA0 <= cp <= 0x1EF9
-            or 0x00C0 <= cp <= 0x00FF
-            or 0x0100 <= cp <= 0x01BF
+            0x1EA0 <= cp <= 0x1EF9 or 0x00C0 <= cp <= 0x00FF or 0x0100 <= cp <= 0x01BF
         ):
             vi += 1
         else:
@@ -929,6 +928,7 @@ class ContextBuilder:
         resolver: Any | None = None,
         scene_macro: SceneMacroContext | None = None,
         bundle: ContextBundle | None = None,
+        retry_feedback: str = "",
     ) -> str:
         """Assemble the user prompt prioritizing critical context within token limits."""
         if bundle is not None:
@@ -968,9 +968,7 @@ class ContextBuilder:
                 for u in batch_units
                 if u.speaker and u.speaker.strip().lower() not in _NON_DIALOGUE_TAGS
             }
-            known_names = {
-                p.tag: p.display_name for p in characters.values() if p.display_name
-            }
+            known_names = {p.tag: p.display_name for p in characters.values() if p.display_name}
             for p in characters.values():
                 if p.display_name:
                     known_names[p.display_name] = p.display_name
@@ -994,9 +992,7 @@ class ContextBuilder:
                         listener=None,
                         is_monologue=True,
                     )
-                lines_section.append(
-                    format_rich_dialogue_line(u, resolved, char_map, graph=graph)
-                )
+                lines_section.append(format_rich_dialogue_line(u, resolved, char_map, graph=graph))
                 prev_unit = u
         else:
             for u in batch_units:
@@ -1076,9 +1072,7 @@ class ContextBuilder:
 
         for char_prof in sorted_profiles:
             g_raw = (char_prof.gender or "unknown").strip().lower()
-            gender_str = (
-                "Nữ" if g_raw == "female" else ("Nam" if g_raw == "male" else "Chưa rõ")
-            )
+            gender_str = "Nữ" if g_raw == "female" else ("Nam" if g_raw == "male" else "Chưa rõ")
             char_info = f"- {char_prof.display_name} (tag: {char_prof.tag}): {gender_str}"
             if char_prof.role:
                 char_info += f" | Vai trò: {char_prof.role}"
@@ -1278,6 +1272,8 @@ class ContextBuilder:
                     available_budget -= tokens
 
         # 3.6 Batch Dialogue Lines
+        if retry_feedback:
+            sections.append(retry_feedback)
         sections.append(batch_text)
         return "\n\n".join(sections)
 
@@ -1294,4 +1290,3 @@ __all__ = [
     "format_rich_dialogue_line",
     "infer_scene_cues",
 ]
-
