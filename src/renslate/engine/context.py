@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -181,16 +182,56 @@ def _is_scene_boundary(curr: Unit, prev: Unit | None) -> bool:
 class InterlocutorResolver:
     """Real-time O(1) zero-token resolver for interlocutor turn-taking and vocatives."""
 
-    def __init__(self) -> None:
+    def __init__(self, history_window: int = 12) -> None:
         self._aliases: dict[str, str] = {}
         self._prev_unit: Unit | None = None
         self._prev_speaker: str | None = None
+        # Recent spoken turns (speaker, seq) of the current scene. Narration, thoughts and
+        # same-speaker runs do not break the "who was I talking to" memory.
+        self._history_window = max(0, history_window)
+        self._recent_turns: deque[tuple[str, int]] = deque(maxlen=8)
 
     def reset(self) -> None:
         """Clear dynamic alias associations and turn-taking state for a new scene."""
         self._aliases.clear()
         self._prev_unit = None
         self._prev_speaker = None
+        self._recent_turns.clear()
+
+    def _remember_turn(self, speaker: str | None, unit: Unit) -> None:
+        if not speaker:
+            return
+        if self._recent_turns and self._recent_turns[-1][0] == speaker:
+            # Collapse same-speaker runs (and repeated resolves of one unit) into one entry.
+            self._recent_turns[-1] = (speaker, unit.seq)
+        else:
+            self._recent_turns.append((speaker, unit.seq))
+
+    def _fallback_listener(
+        self,
+        spk: str,
+        unit: Unit,
+        active_speakers: set[str] | Sequence[str] | None,
+    ) -> tuple[str | None, str]:
+        """Last-resort listener guess: recent other speaker, else the only other participant."""
+        spk_lower = spk.lower()
+        if self._history_window > 0:
+            for other, seq in reversed(self._recent_turns):
+                if other.lower() == spk_lower:
+                    continue
+                if 0 <= unit.seq - seq <= self._history_window:
+                    return other, "recent_turn"
+                break
+        if active_speakers:
+            others = {
+                a.strip()
+                for a in active_speakers
+                if a and a.strip().lower() != spk_lower
+                and a.strip().lower() not in _NON_DIALOGUE_TAGS
+            }
+            if len(others) == 1:
+                return next(iter(others)), "dyad"
+        return None, "default"
 
     @staticmethod
     def _detect_emotion(text: str) -> str | None:
@@ -409,6 +450,7 @@ class InterlocutorResolver:
         if vocative_target:
             self._prev_unit = unit
             self._prev_speaker = spk
+            self._remember_turn(spk, unit)
             return ResolvedInterlocutor(
                 speaker=spk,
                 listener=vocative_target,
@@ -438,6 +480,7 @@ class InterlocutorResolver:
                     if target:
                         self._prev_unit = unit
                         self._prev_speaker = spk
+                        self._remember_turn(spk, unit)
                         return ResolvedInterlocutor(
                             speaker=spk,
                             listener=target,
@@ -461,6 +504,7 @@ class InterlocutorResolver:
                     if target:
                         self._prev_unit = unit
                         self._prev_speaker = spk
+                        self._remember_turn(spk, unit)
                         return ResolvedInterlocutor(
                             speaker=spk,
                             listener=target,
@@ -485,6 +529,7 @@ class InterlocutorResolver:
                             self._aliases[c] = prev_spk
                 self._prev_unit = unit
                 self._prev_speaker = spk
+                self._remember_turn(spk, unit)
                 return ResolvedInterlocutor(
                     speaker=spk,
                     listener=prev_spk,
@@ -493,14 +538,17 @@ class InterlocutorResolver:
                     resolution_method="turn_taking",
                 )
 
+        # 5. Fallbacks: narration between turns, same-speaker runs, two-person scenes
+        fb_listener, fb_method = self._fallback_listener(spk, unit, active_speakers)
         self._prev_unit = unit
         self._prev_speaker = spk
+        self._remember_turn(spk, unit)
         return ResolvedInterlocutor(
             speaker=spk,
-            listener=None,
+            listener=fb_listener,
             is_monologue=False,
             detected_emotion=emotion,
-            resolution_method="default",
+            resolution_method=fb_method,
         )
 
 
