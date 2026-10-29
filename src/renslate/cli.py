@@ -113,6 +113,7 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
     from renslate.engine.analyze import bootstrap_characters_with_llm
     from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
     from renslate.engine.llm import LLMClient
+    from renslate.engine.relationships import bootstrap_relationships_with_llm
 
     llm = LLMClient(project.config.llm)
     print(f"Bắt đầu LLM bootstrapping cho dự án tại {project.root}...")
@@ -121,6 +122,21 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
         print(f"  Đang phân tích hồ sơ nhân vật (tối đa {args.top_chars} nhân vật)...")
         chars = bootstrap_characters_with_llm(project, database, llm, max_chars=args.top_chars)
         print(f"  -> Hoàn tất hồ sơ cho {len(chars)} nhân vật.")
+
+        # 1b. Relationships and address forms from real exchanges
+        if args.top_pairs > 0:
+            print(f"  Đang xác định quan hệ và cách xưng hô (tối đa {args.top_pairs} cặp)...")
+            rel_stats = bootstrap_relationships_with_llm(
+                project,
+                database,
+                llm,
+                max_pairs=args.top_pairs,
+                force=args.refresh_relationships,
+            )
+            print(
+                f"  -> {rel_stats['resolved']}/{rel_stats['pairs']} cặp hợp lệ, "
+                f"{rel_stats['edges']} quan hệ được ghi."
+            )
 
         # 2. Glossary
         glossary_file = project.work_dir / "glossary.json"
@@ -548,6 +564,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bootstrap.add_argument(
         "--top-terms", type=int, default=100, help="số thuật ngữ cần dịch bằng LLM (mặc định: 100)"
+    )
+    bootstrap.add_argument(
+        "--top-pairs",
+        type=int,
+        default=30,
+        help="số cặp nhân vật cần xác định quan hệ/xưng hô bằng LLM (0 để bỏ qua; mặc định: 30)",
+    )
+    bootstrap.add_argument(
+        "--refresh-relationships",
+        action="store_true",
+        help="làm lại cả những cặp đã được LLM xác định trước đó",
     )
 
     translate = add("translate", _cmd_translate, "dịch các dòng thoại bằng model local")

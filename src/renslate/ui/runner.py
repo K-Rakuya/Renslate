@@ -28,6 +28,7 @@ from renslate.engine.analyze import (
 from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient
+from renslate.engine.relationships import bootstrap_relationships_with_llm
 from renslate.engine.translate import TranslationPipeline
 from renslate.renpy.extract import extract
 from renslate.renpy.sdk import find_launcher, generate_translations
@@ -267,6 +268,17 @@ def bootstrap_if_needed(
                 g_final.save_file(glossary_file)
                 g_final.save_db(db)
             db.set_meta("glossary_bootstrapped", utc_timestamp())
+
+    # Judge relationships and Vietnamese address forms from real exchanges (resumable, cheap:
+    # one LLM call per few pairs). Skipped when bootstrapping is disabled or already done.
+    needs_rel_bootstrap = bool(chars) and (
+        force_bootstrap or (not skip_bootstrap and not db.get_meta("relationships_bootstrapped"))
+    )
+    if needs_rel_bootstrap and check_server_health(project.config.llm.base_url):
+        _LOG.info("Đang xác định quan hệ và cách xưng hô giữa các cặp nhân vật...")
+        bootstrap_relationships_with_llm(
+            project, db, LLMClient(project.config.llm), max_pairs=30, force=force_bootstrap
+        )
 
     # Sync character relationships with relationships.json if present
     rel_file = getattr(project, "relationships_path", None)
