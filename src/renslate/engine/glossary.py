@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -156,13 +156,48 @@ def _make_plural_aliases(term: str) -> list[str]:
     return [plural_term] if plural_term.lower() != term.lower() else []
 
 
+def collect_term_examples(
+    entries: Sequence[GlossaryEntry],
+    units: Sequence[Any],
+    *,
+    per_term: int = 2,
+    max_len: int = 160,
+) -> dict[str, list[str]]:
+    """Find short in-game sentences containing each term (whole-word, case-insensitive)."""
+    patterns = {
+        e.term: re.compile(r"(?<!\w)" + re.escape(e.term) + r"(?!\w)", re.IGNORECASE)
+        for e in entries
+        if e.term.strip()
+    }
+    found: dict[str, list[str]] = {t: [] for t in patterns}
+    open_terms = set(patterns)
+    for u in units:
+        if not open_terms:
+            break
+        text = " ".join(str(u.source).split())
+        if not text or len(text) > max_len:
+            continue
+        for term in list(open_terms):
+            if patterns[term].search(text) and text not in found[term]:
+                found[term].append(text)
+                if len(found[term]) >= per_term:
+                    open_terms.discard(term)
+    return {t: v for t, v in found.items() if v}
+
+
 def translate_glossary_with_llm(
     entries: Sequence[GlossaryEntry],
     llm: Any,
     *,
     batch_size: int = 30,
+    examples: Mapping[str, Sequence[str]] | None = None,
 ) -> list[GlossaryEntry]:
-    """Translate glossary entries using the local LLM in batches with zero hardcoding."""
+    """Translate glossary entries using the local LLM in batches with zero hardcoding.
+
+    ``examples`` maps a term to sentences from the game that contain it (see
+    ``collect_term_examples``). A bare word like "Fall" or "Shift" is ambiguous; one real
+    sentence lets the model pick the sense used in this game.
+    """
     untranslated = [e for e in entries if not e.translation.strip()]
     if not untranslated:
         return list(entries)
@@ -187,6 +222,17 @@ def translate_glossary_with_llm(
             'Dịch các thuật ngữ sau sang tiếng Việt dưới dạng JSON object {"Term": "Dịch"}:\n'
             + json.dumps(terms, ensure_ascii=False)
         )
+        if examples:
+            shown = [
+                f"- {t}: " + " | ".join(f'"{x}"' for x in examples[t][:2])
+                for t in terms
+                if examples.get(t)
+            ]
+            if shown:
+                user_prompt += (
+                    "\n\nCâu ví dụ trong game (để hiểu đúng nghĩa của từng thuật ngữ):\n"
+                    + "\n".join(shown)
+                )
         try:
             result_dict, _, _ = llm.complete_json(system_prompt, user_prompt)
             for term in terms:

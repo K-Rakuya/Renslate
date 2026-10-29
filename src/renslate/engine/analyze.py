@@ -37,6 +37,7 @@ from renslate.engine.glossary import (
     Glossary,
     _make_plural_aliases,
     clean_glossary,
+    collect_term_examples,
     mine_glossary_candidates,
     translate_glossary_with_llm,
 )
@@ -47,6 +48,7 @@ _LOG = logging.getLogger("renslate.analyze")
 __all__ = [
     "StylometricSummary",
     "bootstrap_characters_with_llm",
+    "stratified_speaker_samples",
     "extract_character_definitions",
     "extract_scene_macro_contexts",
     "extract_stylometrics",
@@ -975,6 +977,39 @@ def build_persona_user_prompt(
     return prefix + "\n\n".join(char_blocks)
 
 
+def stratified_speaker_samples(
+    units: Sequence[Unit], tags: Sequence[str], per_speaker: int = 4
+) -> dict[str, list[str]]:
+    """Pick sample lines spread across the whole script, not just its opening.
+
+    A character's voice (and gender cues, address forms) often changes or only shows up late;
+    taking the first few lines describes them as they are in the prologue. Lines are bucketed
+    by position and the longest line of each bucket is kept, so the samples cover the story
+    and carry enough text to show style.
+    """
+    wanted = set(tags)
+    by_speaker: dict[str, list[str]] = {}
+    for u in units:
+        if u.speaker in wanted and u.kind is UnitKind.DIALOGUE:
+            text = u.source.strip()
+            if len(text) > 8:
+                by_speaker.setdefault(u.speaker, []).append(text)
+    out: dict[str, list[str]] = {}
+    for tag, lines in by_speaker.items():
+        if len(lines) <= per_speaker:
+            out[tag] = list(lines)
+            continue
+        picked: list[str] = []
+        n = len(lines)
+        for b in range(per_speaker):
+            bucket = lines[b * n // per_speaker : (b + 1) * n // per_speaker]
+            best = max(bucket, key=lambda t: min(len(t), 160))
+            if best not in picked:
+                picked.append(best)
+        out[tag] = picked
+    return out
+
+
 def bootstrap_characters_with_llm(
     project: Project,
     db: Database,
@@ -1006,12 +1041,7 @@ def bootstrap_characters_with_llm(
         return existing_chars
 
     # Collect 3-4 diverse sample lines for each speaker
-    samples_by_speaker: dict[str, list[str]] = {}
-    for u in all_units:
-        if u.speaker in top_speakers and u.source.strip():
-            lst = samples_by_speaker.setdefault(u.speaker, [])
-            if len(lst) < 4 and len(u.source) > 8:
-                lst.append(u.source.strip())
+    samples_by_speaker = stratified_speaker_samples(all_units, top_speakers)
 
     stylometrics_by_speaker = {
         tag: extract_stylometrics(samples_by_speaker.get(tag, [])) for tag in top_speakers
@@ -1550,7 +1580,9 @@ def run_analysis(
 
                 untranslated.sort(key=_freq, reverse=True)
                 to_trans = untranslated[:150]
-                enriched = translate_glossary_with_llm(to_trans, llm)
+                enriched = translate_glossary_with_llm(
+                    to_trans, llm, examples=collect_term_examples(to_trans, db.all_units())
+                )
                 trans_map = {e.term: e for e in enriched if e.translation.strip()}
                 final_entries = [trans_map.get(e.term, e) for e in cleaned]
                 Glossary(final_entries).save_file(glossary_file)

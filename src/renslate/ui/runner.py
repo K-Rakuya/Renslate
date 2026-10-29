@@ -25,7 +25,12 @@ from renslate.engine.analyze import (
     run_analysis,
     segment_scenes,
 )
-from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
+from renslate.engine.glossary import (
+    Glossary,
+    clean_glossary,
+    collect_term_examples,
+    translate_glossary_with_llm,
+)
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient
 from renslate.engine.relationships import bootstrap_relationships_with_llm
@@ -262,7 +267,9 @@ def bootstrap_if_needed(
                 untranslated.sort(key=_freq, reverse=True)
                 to_trans = untranslated[:150]
                 _LOG.info("Đang dịch tự động %d thuật ngữ phổ biến nhất...", len(to_trans))
-                enriched = translate_glossary_with_llm(to_trans, llm_client)
+                enriched = translate_glossary_with_llm(
+                    to_trans, llm_client, examples=collect_term_examples(to_trans, db.all_units())
+                )
                 trans_map = {e.term: e for e in enriched if e.translation.strip()}
                 final_entries = [trans_map.get(e.term, e) for e in cur_glossary]
                 g_final = Glossary(final_entries)

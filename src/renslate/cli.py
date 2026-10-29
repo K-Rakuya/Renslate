@@ -111,7 +111,12 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
     from renslate.core.models import GlossaryEntry
     from renslate.engine.analyze import bootstrap_characters_with_llm
-    from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
+    from renslate.engine.glossary import (
+        Glossary,
+        clean_glossary,
+        collect_term_examples,
+        translate_glossary_with_llm,
+    )
     from renslate.engine.llm import LLMClient
     from renslate.engine.relationships import bootstrap_relationships_with_llm
     from renslate.engine.scenes import summarize_scenes_with_llm
@@ -169,7 +174,9 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             to_trans = untranslated[: args.top_terms]
             total_untrans = len(untranslated)
             print(f"  Đang dịch thuật ngữ bằng LLM ({len(to_trans)}/{total_untrans} ứng viên)...")
-            enriched = translate_glossary_with_llm(to_trans, llm)
+            enriched = translate_glossary_with_llm(
+                to_trans, llm, examples=collect_term_examples(to_trans, database.all_units())
+            )
             trans_map = {e.term: e for e in enriched if e.translation.strip()}
             final_entries = [trans_map.get(e.term, e) for e in cleaned_entries]
             g_final = Glossary(final_entries)
