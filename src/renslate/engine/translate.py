@@ -34,6 +34,7 @@ from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
+from renslate.engine.scenes import load_scene_contexts
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
 from renslate.renpy.mask import (
@@ -96,6 +97,7 @@ class _PreparedBatch:
     batch_grammar: str
     budget: int
     single_key: str | None
+    scene_macro: Any = None
 
 
 @dataclass(slots=True)
@@ -430,6 +432,7 @@ class TranslationPipeline:
 
         self.characters = db.get_characters()
         self.scenes = db.get_scenes()
+        self._scene_ctx = load_scene_contexts(db, self.scenes)
         self.qa = QAChecker(max_length_ratio=config.qa.max_length_ratio)
         self.llm = LLMClient(config.llm)
 
@@ -682,6 +685,9 @@ class TranslationPipeline:
             batch_grammar=batch_grammar,
             budget=budget,
             single_key=single_key,
+            scene_macro=(
+                self._scene_ctx.get(active_scene.scene_id) if active_scene is not None else None
+            ),
         )
 
     def _translate_batch(
@@ -718,6 +724,7 @@ class TranslationPipeline:
             glossary_matches=prep.glossary_matches,
             characters=self.characters,
             scene_summary=prep.active_scene,
+            scene_macro=prep.scene_macro,
             lookback=list(lookback),
             fuzzy_matches=prep.fuzzy_hints,
             graph=self.graph,

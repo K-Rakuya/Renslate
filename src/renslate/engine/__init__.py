@@ -31,6 +31,7 @@ from renslate.engine.qa import (
     repair_glossary_leakage,
 )
 from renslate.engine.relationships import bootstrap_relationships_with_llm
+from renslate.engine.scenes import summarize_scenes_with_llm
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, normalize_source
 from renslate.engine.translate import (
     ProgressCallback,
@@ -61,6 +62,7 @@ __all__ = [
     "TranslationStats",
     "bootstrap_characters_with_llm",
     "bootstrap_relationships_with_llm",
+    "summarize_scenes_with_llm",
     "clean_glossary",
     "clean_translation",
     "estimate_tokens",

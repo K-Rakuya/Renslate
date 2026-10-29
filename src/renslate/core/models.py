@@ -365,6 +365,9 @@ class SceneMacroContext:
             lines.append(f"- Nhân vật hiện diện (Characters): {', '.join(self.active_characters)}")
         if self.summary:
             lines.append(f"- Tóm tắt tình huống (Summary): {self.summary}")
+        previous = self.metadata.get("previous_summary") if self.metadata else None
+        if previous:
+            lines.append(f"- Diễn biến cảnh trước (Previous): {previous}")
         return "\n".join(lines)
 
     def with_updates(self, **kwargs: Any) -> SceneMacroContext:

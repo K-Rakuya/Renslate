@@ -29,6 +29,7 @@ from renslate.engine.glossary import Glossary, clean_glossary, translate_glossar
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient
 from renslate.engine.relationships import bootstrap_relationships_with_llm
+from renslate.engine.scenes import summarize_scenes_with_llm
 from renslate.engine.translate import TranslationPipeline
 from renslate.renpy.extract import extract
 from renslate.renpy.sdk import find_launcher, generate_translations
@@ -278,6 +279,16 @@ def bootstrap_if_needed(
         _LOG.info("Đang xác định quan hệ và cách xưng hô giữa các cặp nhân vật...")
         bootstrap_relationships_with_llm(
             project, db, LLMClient(project.config.llm), max_pairs=30, force=force_bootstrap
+        )
+
+    # Summarise scenes so each batch is translated knowing what is going on (resumable: scenes
+    # that already have a summary are skipped, so reruns are cheap).
+    if (force_bootstrap or not skip_bootstrap) and check_server_health(
+        project.config.llm.base_url
+    ):
+        _LOG.info("Đang tóm tắt các phân cảnh để làm ngữ cảnh dịch...")
+        summarize_scenes_with_llm(
+            project, db, LLMClient(project.config.llm), max_scenes=150, force=False
         )
 
     # Sync character relationships with relationships.json if present

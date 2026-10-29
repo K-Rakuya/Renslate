@@ -114,6 +114,7 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
     from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
     from renslate.engine.llm import LLMClient
     from renslate.engine.relationships import bootstrap_relationships_with_llm
+    from renslate.engine.scenes import summarize_scenes_with_llm
 
     llm = LLMClient(project.config.llm)
     print(f"Bắt đầu LLM bootstrapping cho dự án tại {project.root}...")
@@ -137,6 +138,14 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
                 f"  -> {rel_stats['resolved']}/{rel_stats['pairs']} cặp hợp lệ, "
                 f"{rel_stats['edges']} quan hệ được ghi."
             )
+
+        # 1c. Scene summaries (location/mood/what is happening) for translation context
+        if args.top_scenes > 0:
+            print(f"  Đang tóm tắt phân cảnh (tối đa {args.top_scenes} cảnh)...")
+            sc_stats = summarize_scenes_with_llm(
+                project, database, llm, max_scenes=args.top_scenes, force=args.refresh_scenes
+            )
+            print(f"  -> Đã tóm tắt {sc_stats['summarized']}/{sc_stats['scenes']} cảnh.")
 
         # 2. Glossary
         glossary_file = project.work_dir / "glossary.json"
@@ -575,6 +584,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--refresh-relationships",
         action="store_true",
         help="làm lại cả những cặp đã được LLM xác định trước đó",
+    )
+
+    bootstrap.add_argument(
+        "--top-scenes",
+        type=int,
+        default=80,
+        help="số phân cảnh cần tóm tắt bằng LLM làm ngữ cảnh (0 để bỏ qua; mặc định: 80)",
+    )
+    bootstrap.add_argument(
+        "--refresh-scenes", action="store_true", help="tóm tắt lại cả những cảnh đã có tóm tắt"
     )
 
     translate = add("translate", _cmd_translate, "dịch các dòng thoại bằng model local")
