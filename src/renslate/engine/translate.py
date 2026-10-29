@@ -34,6 +34,7 @@ from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
+from renslate.engine.knowledge import refresh_character_genders
 from renslate.engine.scenes import load_scene_contexts
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
@@ -469,6 +470,21 @@ class TranslationPipeline:
             style_guide = style_path.read_text(encoding="utf-8")
         self.context = ContextBuilder(config, custom_style_guide=style_guide)
 
+    def refresh_knowledge(self) -> None:
+        """Re-read data other tools changed and fix character facts from script evidence.
+
+        The pipeline snapshots characters/scenes once in ``__init__``; a long-lived instance
+        (UI, resumed run) would otherwise translate with stale profiles. Runs on the main
+        thread before any prefetch worker starts.
+        """
+        try:
+            refresh_character_genders(self.db)
+        except Exception:  # best-effort: never block translation on a heuristic
+            pass
+        self.characters = self.db.get_characters()
+        self.scenes = self.db.get_scenes()
+        self._scene_ctx = load_scene_contexts(self.db, self.scenes)
+
     def run(
         self,
         *,
@@ -478,6 +494,7 @@ class TranslationPipeline:
     ) -> TranslationStats:
         """Execute the translation pipeline over pending units."""
         stats = TranslationStats()
+        self.refresh_knowledge()
         pending = self.db.pending_units(limit=limit, include_failed=include_failed)
         stats.total_pending = len(pending)
 
