@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -77,6 +78,9 @@ class TranslationMemory:
 
     def __init__(self, db: Database) -> None:
         self._db = db
+        # The pipeline prepares the next batch (fuzzy lookups) on a worker thread while the
+        # main thread records fresh translations; both touch the in-memory indices.
+        self._lock = threading.RLock()
         self._bloom = _L1BloomFilter()
         self._exact_map: dict[str, TMEntry] = {}
         # Pre-computed 3-grams for fast fuzzy filtering: ngram -> set of src_norm
@@ -86,16 +90,17 @@ class TranslationMemory:
 
     def reload(self) -> None:
         """Load all entries from SQLite database into memory indices."""
-        self._bloom.clear()
-        self._exact_map.clear()
-        self._ngram_index.clear()
-        self._entries.clear()
-        for entry in self._db.all_tm():
-            self._entries[entry.src_norm] = entry
-            self._exact_map[entry.src_norm] = entry
-            self._bloom.add(entry.src_norm)
-            for ng in _get_char_ngrams(entry.src_norm):
-                self._ngram_index[ng].add(entry.src_norm)
+        with self._lock:
+            self._bloom.clear()
+            self._exact_map.clear()
+            self._ngram_index.clear()
+            self._entries.clear()
+            for entry in self._db.all_tm():
+                self._entries[entry.src_norm] = entry
+                self._exact_map[entry.src_norm] = entry
+                self._bloom.add(entry.src_norm)
+                for ng in _get_char_ngrams(entry.src_norm):
+                    self._ngram_index[ng].add(entry.src_norm)
 
     def lookup_exact(self, source: str) -> str | None:
         """Return the target translation if an exact match exists in TM."""
@@ -122,40 +127,51 @@ class TranslationMemory:
             return []
 
         len_norm = len(norm)
-        # Count common n-grams to score candidate relevance with length bound pruning
+        # Count common n-grams to score candidate relevance with length bound pruning.
+        # Only the index walk needs the lock; the expensive scoring below works on a snapshot.
         candidate_scores: dict[str, int] = defaultdict(int)
-        for ng in query_ngrams:
-            for cand in self._ngram_index.get(ng, ()):
-                cand_len = len(cand)
-                if (2.0 * min(len_norm, cand_len) / (len_norm + cand_len)) < threshold:
-                    continue
-                candidate_scores[cand] += 1
+        with self._lock:
+            for ng in query_ngrams:
+                for cand in self._ngram_index.get(ng, ()):
+                    cand_len = len(cand)
+                    if (2.0 * min(len_norm, cand_len) / (len_norm + cand_len)) < threshold:
+                        continue
+                    candidate_scores[cand] += 1
+
+            min_ngrams = max(1, int(len(query_ngrams) * threshold * 0.35))
+
+            # Sort candidates by shared n-gram count and prune to top-K
+            ranked_candidates = sorted(
+                (
+                    (cand, count)
+                    for cand, count in candidate_scores.items()
+                    if count >= min_ngrams
+                ),
+                key=lambda x: x[1],
+                reverse=True,
+            )[: max(50, max_results * 15)]
+            snapshot = [
+                (cand, self._entries[cand].target)
+                for cand, _count in ranked_candidates
+                if cand in self._entries
+            ]
 
         matches: list[FuzzyMatch] = []
-        min_ngrams = max(1, int(len(query_ngrams) * threshold * 0.35))
-
-        # Sort candidates by shared n-gram count and prune to top-K
-        ranked_candidates = sorted(
-            ((cand, count) for cand, count in candidate_scores.items() if count >= min_ngrams),
-            key=lambda x: x[1],
-            reverse=True,
-        )[: max(50, max_results * 15)]
-
-        for cand, _common_count in ranked_candidates:
+        norm_lower = norm.lower()
+        for cand, target in snapshot:
             cand_len = len(cand)
             if cand_len == 0:
                 continue
 
-            # Strict mathematical upper bound: SequenceMatcher.ratio <= 2 * min(L1, L2) / (L1 + L2)
+            # Strict upper bound: SequenceMatcher.ratio <= 2 * min(L1, L2) / (L1 + L2)
             max_possible_ratio = 2.0 * min(len_norm, cand_len) / (len_norm + cand_len)
             if max_possible_ratio < threshold:
                 continue
 
-            matcher = difflib.SequenceMatcher(None, norm.lower(), cand.lower())
+            matcher = difflib.SequenceMatcher(None, norm_lower, cand.lower())
             ratio = matcher.ratio()
             if ratio >= threshold:
-                entry = self._entries[cand]
-                matches.append(FuzzyMatch(score=round(ratio, 4), source=cand, target=entry.target))
+                matches.append(FuzzyMatch(score=round(ratio, 4), source=cand, target=target))
 
         matches.sort(key=lambda m: m.score, reverse=True)
         return matches[:max_results]
@@ -174,9 +190,10 @@ class TranslationMemory:
             origin=origin,
             updated_at=now,
         )
-        self._db.save_tm(entry)
-        self._entries[norm] = entry
-        self._exact_map[norm] = entry
-        self._bloom.add(norm)
-        for ng in _get_char_ngrams(norm):
-            self._ngram_index[ng].add(norm)
+        with self._lock:
+            self._db.save_tm(entry)
+            self._entries[norm] = entry
+            self._exact_map[norm] = entry
+            self._bloom.add(norm)
+            for ng in _get_char_ngrams(norm):
+                self._ngram_index[ng].add(norm)
