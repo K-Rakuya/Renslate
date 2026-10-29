@@ -14,7 +14,15 @@ from typing import Any
 from renslate.core.config import Config
 from renslate.core.db import Database, utc_timestamp
 from renslate.core.errors import LLMError
-from renslate.core.models import BatchLog, GlossaryEntry, Origin, Status, Unit, UnitKind
+from renslate.core.models import (
+    LOCKED_ORIGINS,
+    BatchLog,
+    GlossaryEntry,
+    Origin,
+    Status,
+    Unit,
+    UnitKind,
+)
 from renslate.core.project import Project
 from renslate.engine.context import (
     ContextBuilder,
@@ -26,7 +34,7 @@ from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
-from renslate.engine.tm import FuzzyMatch, TranslationMemory
+from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
 from renslate.renpy.builtin_ui import get_builtin_ui_translation
 from renslate.renpy.mask import (
     auto_repair_placeholders,
@@ -67,6 +75,7 @@ class TranslationStats:
     total_pending: int = 0
     seeded: int = 0
     tm_reused: int = 0
+    tm_context_skipped: int = 0
     llm_translated: int = 0
     failed: int = 0
     batches_count: int = 0
@@ -500,17 +509,25 @@ class TranslationPipeline:
                     lookback_buffer.append(LookbackItem(u.speaker, u.source, seed))
                     continue
 
-                tm_match = self.tm.lookup_exact(u.source) or self.tm.lookup_exact(u.source.lower())
-                if tm_match is not None:
-                    self.db.update_translation(
-                        uid=u.uid,
-                        target=tm_match,
-                        origin=Origin.TM,
-                        status=Status.TRANSLATED,
-                    )
-                    stats.tm_reused += 1
-                    lookback_buffer.append(LookbackItem(u.speaker, u.source, tm_match))
-                    continue
+                tm_entry = self.tm.lookup_exact_entry(u.source) or self.tm.lookup_exact_entry(
+                    u.source.lower()
+                )
+                if tm_entry is not None:
+                    # Human-curated entries are always reused. Machine entries are reused only
+                    # for context-free lines: dialogue carrying I/you/kinship words must be
+                    # re-translated so the pronouns follow the *current* speaker/listener pair.
+                    if tm_entry.origin in LOCKED_ORIGINS or not is_context_sensitive_line(u):
+                        tm_match = tm_entry.target
+                        self.db.update_translation(
+                            uid=u.uid,
+                            target=tm_match,
+                            origin=Origin.TM,
+                            status=Status.TRANSLATED,
+                        )
+                        stats.tm_reused += 1
+                        lookback_buffer.append(LookbackItem(u.speaker, u.source, tm_match))
+                        continue
+                    stats.tm_context_skipped += 1
 
                 need_llm.append(u)
 

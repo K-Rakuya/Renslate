@@ -1218,7 +1218,12 @@ class ContextBuilder:
                         f'- Gợi ý cho {uid} (khớp {pct}%): "{m.source}" => "{m.target}"'
                     )
             if fz_lines:
-                fz_block = "GỢI Ý TỪ BỘ NHỚ DỊCH:\n" + "\n".join(fz_lines)
+                fz_block = (
+                    "GỢI Ý TỪ BỘ NHỚ DỊCH:\n"
+                    "(Chỉ để tham khảo thuật ngữ và giọng văn. Đại từ xưng hô PHẢI theo quy tắc "
+                    "của cặp nhân vật đang đối thoại ở trên, không sao chép máy móc.)\n"
+                    + "\n".join(fz_lines)
+                )
                 tokens = estimate_tokens(fz_block)
                 if tokens <= available_budget:
                     sections.append(fz_block)

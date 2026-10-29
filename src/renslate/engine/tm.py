@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from renslate.core.db import Database, utc_timestamp
-from renslate.core.models import Origin, TMEntry
+from renslate.core.models import LOCKED_ORIGINS, Origin, TMEntry, Unit, UnitKind
 from renslate.core.textio import normalize_nfc
 from renslate.engine.qa import clean_translation
 
@@ -26,6 +26,51 @@ def normalize_source(text: str) -> str:
     nfc = normalize_nfc(text)
     collapsed = _WHITESPACE.sub(" ", nfc).strip()
     return collapsed
+
+
+# Lines whose Vietnamese rendering depends on *who is talking to whom* (first/second person
+# pronouns, kinship and honorific vocatives). A bare exact-match TM hit is unsafe for them:
+# "Thank you." becomes "Cảm ơn anh." for one pair and "Cảm ơn ngài." for another.
+_ADDRESS_SENSITIVE = re.compile(
+    r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves|you|your|yours|yourself|yourselves"
+    r"|sir|ma'am|madam|miss|mister|master|mistress|milord|milady|my\s+lord|my\s+lady"
+    r"|mom|mum|mother|dad|father|papa|mama|brother|sister|bro|sis|uncle|aunt|grandpa|grandma"
+    r"|sensei|senpai|kouhai)\b",
+    re.IGNORECASE,
+)
+_NARRATION_SPEAKERS = frozenset(
+    {
+        "",
+        "t",
+        "th",
+        "thought",
+        "thoughts",
+        "thinking",
+        "narrator",
+        "narration",
+        "none",
+        "all",
+        "system",
+        "ui",
+        "menu",
+    }
+)
+_TAG_OR_VAR = re.compile(r"\{[^{}]*\}|\[[^\[\]]*\]|⟦[^⟦⟧]*⟧")
+
+
+def is_context_sensitive_line(unit: Unit) -> bool:
+    """Return True when a unit's translation depends on speaker/listener relationship.
+
+    Only spoken dialogue by a real character qualifies. UI strings, menu choices and
+    narration (no addressee) are context-free and remain safe for exact TM reuse.
+    """
+    if unit.kind is not UnitKind.DIALOGUE:
+        return False
+    speaker = (unit.speaker or "").strip().lower()
+    if speaker in _NARRATION_SPEAKERS:
+        return False
+    text = _TAG_OR_VAR.sub(" ", unit.source)
+    return _ADDRESS_SENSITIVE.search(text) is not None
 
 
 def _get_char_ngrams(text: str, n: int = 3) -> set[str]:
@@ -102,12 +147,17 @@ class TranslationMemory:
                 for ng in _get_char_ngrams(entry.src_norm):
                     self._ngram_index[ng].add(entry.src_norm)
 
+    def lookup_exact_entry(self, source: str) -> TMEntry | None:
+        """Return the full TM entry (target + origin) for an exact match, or None."""
+        norm = normalize_source(source)
+        with self._lock:
+            if not norm or not self._bloom.contains(norm):
+                return None
+            return self._exact_map.get(norm)
+
     def lookup_exact(self, source: str) -> str | None:
         """Return the target translation if an exact match exists in TM."""
-        norm = normalize_source(source)
-        if not norm or not self._bloom.contains(norm):
-            return None
-        entry = self._exact_map.get(norm)
+        entry = self.lookup_exact_entry(source)
         return entry.target if entry is not None else None
 
     def lookup_fuzzy(
@@ -182,11 +232,19 @@ class TranslationMemory:
         clean_tgt = clean_translation(target, source=source)
         if not norm or not clean_tgt:
             return
+        existing = self._entries.get(norm)
+        if (
+            existing is not None
+            and existing.origin in LOCKED_ORIGINS
+            and origin not in LOCKED_ORIGINS
+        ):
+            # Human-curated memory must never be overwritten by machine output.
+            return
         now = utc_timestamp()
         entry = TMEntry(
             src_norm=norm,
             target=clean_tgt,
-            uses=1,
+            uses=(existing.uses + 1) if existing is not None else 1,
             origin=origin,
             updated_at=now,
         )
