@@ -79,6 +79,7 @@ class Unit:
     qa_flags: tuple[str, ...] = ()
     updated_at: str = ""
     file: str | None = None
+    stage: Any | None = None
 
     def __post_init__(self) -> None:
         if self.file is None and self.ref:

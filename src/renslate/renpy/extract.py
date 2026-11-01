@@ -26,6 +26,7 @@ from renslate.renpy.parser import (
     parse_string_line,
     string_uid,
 )
+from renslate.renpy.stage import StageTracker, build_stage_index
 
 FLAG_SOURCE_CHANGED = "source_changed"
 FLAG_MARKUP_INVALID = "markup_invalid"
@@ -409,6 +410,7 @@ def _scan_raw_script(
 ) -> None:
     current_label: str | None = None
     label_pattern = re.compile(r"^\s*label\s+(?P<label>[A-Za-z_]\w*)\s*:")
+    stage_tracker = StageTracker()
 
     for idx, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -418,6 +420,9 @@ def _scan_raw_script(
         lbl_match = label_pattern.match(line)
         if lbl_match:
             current_label = lbl_match.group("label")
+            continue
+
+        if stage_tracker.process_line(stripped):
             continue
 
         say = parse_say(stripped)
@@ -454,6 +459,7 @@ def _scan_raw_script(
                     line=idx,
                     anchor_line=idx,
                     fingerprint=fp,
+                    stage=stage_tracker.capture(),
                 )
             )
             continue
@@ -546,6 +552,15 @@ def scan_project(
                     continue
                 scanner.scan_file(relative, text_file.lines)
 
+        stage_index = build_stage_index(search_dir)
+        if stage_index:
+            scanner.units = [
+                dataclasses.replace(u, stage=stage_index[u.ref])
+                if (u.stage is None and u.ref and u.ref in stage_index)
+                else u
+                for u in scanner.units
+            ]
+
         return scanner, len(files)
 
     # Fallback: scan game/*.rpy scripts directly if tl_root does not exist
@@ -637,6 +652,7 @@ def _build_unit(
         masked_source=masked_source,
         target=target,
         origin=origin,
+        stage=getattr(parsed, "stage", None) or (previous.stage if previous else None),
         qa_flags=tuple(sorted(flags)),
         updated_at=previous.updated_at if previous is not None else now,
     )

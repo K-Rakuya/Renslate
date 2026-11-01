@@ -51,6 +51,38 @@ def _format_relational_rule(
     )
 
 
+_EMOTION_VIETNAMESE = {
+    "blush": "e thẹn (blush)",
+    "angry": "tức giận (angry)",
+    "happy": "vui vẻ (happy)",
+    "crying": "khóc/buồn bã (crying)",
+    "sad": "buồn bã (sad)",
+    "surprised": "bất ngờ (surprised)",
+    "shocked": "bàng hoàng (shocked)",
+    "smirk": "cười khẩy (smirk)",
+    "smile": "mỉm cười (smile)",
+    "worried": "lo lắng (worried)",
+    "scared": "sợ hãi (scared)",
+}
+
+
+def _resolve_unit_emotion(unit: Unit, resolved_emotion: str | None, spk_lower: str) -> str:
+    parts: list[str] = []
+    if resolved_emotion:
+        parts.append(f"Cảm xúc: {resolved_emotion}")
+
+    if hasattr(unit, "stage") and unit.stage is not None:
+        active_sprites = getattr(unit.stage, "active_sprites", ())
+        for sp in active_sprites:
+            if getattr(sp, "tag", "").lower() == spk_lower and getattr(sp, "expression", ""):
+                raw_expr = sp.expression.strip().lower()
+                vn_expr = _EMOTION_VIETNAMESE.get(raw_expr, raw_expr)
+                parts.append(f"Biểu cảm: {vn_expr}")
+                break
+
+    return " | " + " | ".join(parts) if parts else ""
+
+
 def format_rich_dialogue_line(
     unit: Unit,
     resolved: ResolvedInterlocutor,
@@ -75,9 +107,7 @@ def format_rich_dialogue_line(
         else:
             spk_label = unit.speaker
 
-        emotion_str = (
-            f" | Cảm xúc: {resolved.detected_emotion}" if resolved.detected_emotion else ""
-        )
+        emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
         return f"{unit.uid} | [Độc thoại/Nội tâm: {spk_label}{emotion_str}] {text}"
 
     # 2. Interlocutor Case with Resolved Listener
@@ -132,9 +162,7 @@ def format_rich_dialogue_line(
                 else:
                     rel_part = f" | Quan hệ: {rule_clean}"
 
-        emotion_str = (
-            f" | Cảm xúc: {resolved.detected_emotion}" if resolved.detected_emotion else ""
-        )
+        emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
         return (
             f"{unit.uid} | [Người nói: {spk_name} -> Người nghe: {lis_name}"
             f"{rel_part}{emotion_str}] {text}"
@@ -146,5 +174,5 @@ def format_rich_dialogue_line(
     else:
         spk_label = unit.speaker
 
-    emotion_str = f" | Cảm xúc: {resolved.detected_emotion}" if resolved.detected_emotion else ""
+    emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
     return f"{unit.uid} | [Người nói: {spk_label}{emotion_str}] {text}"

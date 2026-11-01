@@ -25,6 +25,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import Any
 
 from renslate.core.models import UnitKind
 from renslate.renpy.literals import decode_say_text, parse_python_string
@@ -151,6 +152,7 @@ class ParsedUnit:
     line: int
     anchor_line: int
     fingerprint: str
+    stage: Any | None = None
 
 
 def fingerprint(anchor: str, line: str) -> str:
