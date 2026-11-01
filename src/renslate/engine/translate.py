@@ -20,6 +20,7 @@ from renslate.core.models import (
     BatchLog,
     GlossaryEntry,
     Origin,
+    SceneMacroContext,
     Status,
     Unit,
     UnitKind,
@@ -35,7 +36,7 @@ from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.knowledge import refresh_character_genders
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
-from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation, repair_glossary_leakage
+from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation
 from renslate.engine.repair import RetryLadder, UnitFailure
 from renslate.engine.scenes import load_scene_contexts
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
@@ -348,6 +349,9 @@ def partition_batches(
     if not units:
         return []
 
+    # Strictly sort by sequence order (seq, uid) to ensure unbroken chronological dialogue context
+    units = sorted(units, key=lambda u: (u.seq, u.uid))
+
     if len(units) == 1:
         return [[units[0]]]
 
@@ -406,7 +410,7 @@ def partition_batches(
     if current_batch:
         batches.append(current_batch)
 
-    return batches
+    return [sorted(b, key=lambda u: (u.seq, u.uid)) for b in batches]
 
 
 class TranslationPipeline:
@@ -424,13 +428,8 @@ class TranslationPipeline:
         self.db = db
         self.config = config
         self.tm = TranslationMemory(db)
-        self.glossary = Glossary.load_db(db)
-        # Also check project root glossary.json if present
-        gl_file = project.work_dir / "glossary.json"
-        if gl_file.is_file():
-            file_glossary = Glossary.load_file(gl_file)
-            for e in file_glossary.entries:
-                self.glossary.add(e)
+        # Glossary mechanism disabled during translation to prevent vocabulary pollution
+        self.glossary = Glossary([])
 
         self.characters = db.get_characters()
         self.scenes = db.get_scenes()
@@ -556,6 +555,7 @@ class TranslationPipeline:
         if not need_llm:
             return stats
 
+        need_llm.sort(key=lambda u: (u.seq, u.uid))
         batches = partition_batches(
             need_llm,
             max_lines=self.config.batch.max_lines,
@@ -604,9 +604,10 @@ class TranslationPipeline:
         return stats
 
     def _prepare_batch(self, batch: Sequence[Unit]) -> _PreparedBatch:
+        # Strictly sort units by sequence order (seq, uid)
+        batch = sorted(batch, key=lambda u: (u.seq, u.uid))
         batch_id = f"b_{uuid.uuid4().hex[:12]}"
-        texts = [u.masked_source or u.source for u in batch]
-        glossary_matches = self.glossary.match_batch(texts)
+        glossary_matches: Sequence[GlossaryEntry] = ()
 
         # Collect fuzzy matches for prompt hints
         fuzzy_hints: dict[str, list[FuzzyMatch]] = {}
@@ -630,6 +631,44 @@ class TranslationPipeline:
                     active_scene = sc
                     break
 
+        # JIT Scene Summarization: ensure active scene has an LLM narrative summary
+        scene_macro = None
+        if active_scene is not None:
+            scene_macro = self._scene_ctx.get(active_scene.scene_id)
+            if (scene_macro is None or not scene_macro.summary) and not active_scene.summary:
+                from renslate.engine.scenes import summarize_single_scene_with_llm
+
+                try:
+                    jit_macro = summarize_single_scene_with_llm(
+                        self.project,
+                        self.db,
+                        self.llm,
+                        active_scene,
+                        min_lines=2,
+                        characters=self.characters,
+                        scenes=self.scenes,
+                    )
+                    if jit_macro is not None:
+                        self._scene_ctx[active_scene.scene_id] = jit_macro
+                        scene_macro = jit_macro
+                except Exception as exc:
+                    _LOG.debug(
+                        "JIT scene summarization skipped for %s: %s", active_scene.scene_id, exc
+                    )
+            elif scene_macro is None and active_scene.summary:
+                loc = getattr(active_scene, "location", "")
+                atmos = getattr(active_scene, "atmosphere", "")
+                scene_macro = SceneMacroContext(
+                    scene_id=active_scene.scene_id,
+                    label=active_scene.label,
+                    first_seq=active_scene.first_seq,
+                    last_seq=active_scene.last_seq,
+                    summary=active_scene.summary,
+                    location=loc,
+                    atmosphere=atmos,
+                )
+                self._scene_ctx[active_scene.scene_id] = scene_macro
+
         system_prompt = self.context.build_system_prompt()
 
         has_cjk_source = any(_CJK_PATTERN.search(u.source) for u in batch)
@@ -644,7 +683,12 @@ class TranslationPipeline:
             "additionalProperties": False,
         }
         batch_grammar = generate_batch_gbnf([u.uid for u in batch], allow_cjk=has_cjk_source)
-        budget = ContextBuilder.calculate_output_budget(len(batch))
+        batch_source_tokens = sum(estimate_tokens(u.masked_source or u.source) for u in batch)
+        budget = ContextBuilder.calculate_output_budget(
+            len(batch),
+            source_tokens=batch_source_tokens,
+            n_ctx=self.config.llm.n_ctx,
+        )
         single_key = batch[0].uid if len(batch) == 1 else None
 
         return _PreparedBatch(
@@ -658,9 +702,7 @@ class TranslationPipeline:
             batch_grammar=batch_grammar,
             budget=budget,
             single_key=single_key,
-            scene_macro=(
-                self._scene_ctx.get(active_scene.scene_id) if active_scene is not None else None
-            ),
+            scene_macro=scene_macro,
         )
 
     def _settle_batch(
@@ -916,9 +958,6 @@ class TranslationPipeline:
                 final_target = cleaned
             final_target = enforce_tag_invariants(u.source, final_target)
 
-            unit_glossary = self.glossary.match_text(u.masked_source or u.source)
-            final_target = repair_glossary_leakage(final_target, unit_glossary)
-
             masked_for_qa = masked if ("⟦" in final_target) else None
             pronoun_rules = None
             if u.speaker and self.characters:
@@ -997,7 +1036,7 @@ class TranslationPipeline:
                 u.source,
                 masked_for_qa,
                 final_target,
-                glossary_matches=unit_glossary,
+                glossary_matches=(),
                 speaker=u.speaker,
                 pronoun_rules=pronoun_rules,
             )

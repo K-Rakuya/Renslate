@@ -27,7 +27,9 @@ def test_feedback_clips_long_candidates() -> None:
     assert text.count("x") < 200 and text.endswith('…"')
 
 
-def run_ladder(n_failed: int, passing_after: str) -> tuple[list[tuple[list[str], str]], list]:
+def run_ladder(
+    n_failed: int, passing_after: str
+) -> tuple[list[tuple[list[str], str]], tuple[list[UnitFailure], list[tuple[str, int]]]]:
     batch = [unit(i) for i in range(n_failed + 2)]
     failures = [failure(i, candidate=f"bad{i}") for i in range(n_failed)]
     calls: list[tuple[list[str], str]] = []
@@ -40,7 +42,7 @@ def run_ladder(n_failed: int, passing_after: str) -> tuple[list[tuple[list[str],
 
     stages: list[tuple[str, int]] = []
     result = RetryLadder().run(batch, failures, attempt, lambda s, c: stages.append((s, c)))
-    return calls, [result, stages]
+    return calls, (result, stages)
 
 
 def test_many_failures_go_through_clusters_then_stop_when_fixed() -> None:
@@ -69,5 +71,10 @@ def test_few_failures_skip_cluster_stage() -> None:
 
 def test_single_unit_batch_is_not_retried() -> None:
     called: list[int] = []
-    out = RetryLadder().run([unit(1)], [failure(1)], lambda u, f: called.append(1) or [], None)
+
+    def _dummy(u: Sequence[Unit], f: str) -> list[UnitFailure]:
+        called.append(1)
+        return []
+
+    out = RetryLadder().run([unit(1)], [failure(1)], _dummy, None)
     assert called == [] and len(out) == 1

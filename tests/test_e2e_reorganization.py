@@ -1309,7 +1309,7 @@ class TestTier3CrossFeatureInteractions:
             [u], lookback=lookback, glossary_matches=glossary.entries
         )
 
-        assert "học viện" in prompt
+        assert "THUẬT NGỮ BẮT BUỘC" not in prompt
         assert "Chào mừng!" in prompt
         assert "Welcome to the academy!" in prompt
 

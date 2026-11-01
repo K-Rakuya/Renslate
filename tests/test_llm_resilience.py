@@ -209,6 +209,27 @@ class TestSingleItemRecoveryAndFallback:
         with pytest.raises(LLMError):
             extract_json_object(raw)
 
+    def test_devlog_with_literal_newlines_and_nested_quotes(self) -> None:
+        """Devlog strings with nested quotes and escaped quotes parse cleanly under strict=False."""
+        raw = (
+            '{\n'
+            '  "s:589b1b2ea97d4d7ce4fe": "⟦T1⟧★ ⟦T2⟧Bản vá 1.2.0⟦/T2⟧ ★⟦L1⟧Nội dung mới:\\n'
+            '• Sự kiện lễ hội mùa hè:\\n'
+            '    (Nói chuyện với ⟦T4⟧NPC_A⟦/T4⟧ vào buổi sáng, cần hoàn thành nhiệm vụ \\"Nhiệm vụ chính\\")\\n'
+            '    • Tùy chọn A\\n'
+            '    • Tùy chọn B"\n'
+            '}'
+        )
+        res = extract_json_object(raw)
+        assert "s:589b1b2ea97d4d7ce4fe" in res
+        assert 'nhiệm vụ "Nhiệm vụ chính"' in res["s:589b1b2ea97d4d7ce4fe"]
+
+    def test_devlog_with_raw_control_character_newlines(self) -> None:
+        """Raw unescaped ASCII newline control characters inside JSON strings parse via strict=False."""
+        raw = '{"s:1": "Dòng 1\nDòng 2\nDòng 3"}'
+        res = extract_json_object(raw)
+        assert res == {"s:1": "Dòng 1\nDòng 2\nDòng 3"}
+
 
 class TestTagInvariantEnforcement:
     """Tests for formal Tag Invariant Enforcement: Tags(Target) ⊆ Tags(Source)."""

@@ -90,6 +90,10 @@ _KINSHIP_WORDS = frozenset(
     }
 )
 
+_PROTAGONIST_TAGS = frozenset(
+    {"mc", "player", "hero", "protag", "protagonist", "main", "you", "me"}
+)
+
 
 def _strip_outer_quotes(text: str) -> str:
     """Strip matching pairs of outer quotation marks and Japanese brackets."""
@@ -166,7 +170,7 @@ def _extract_unit_file(unit: Unit | None) -> str | None:
 
 
 def _is_scene_boundary(curr: Unit, prev: Unit | None) -> bool:
-    """Determine whether curr and prev cross a scene label or file boundary."""
+    """Determine whether curr and prev cross a scene label, file boundary, or sequence gap."""
     if prev is None:
         return False
     curr_label = (curr.label or "").strip()
@@ -176,7 +180,14 @@ def _is_scene_boundary(curr: Unit, prev: Unit | None) -> bool:
 
     curr_file = (_extract_unit_file(curr) or "").strip()
     prev_file = (_extract_unit_file(prev) or "").strip()
-    return curr_file != prev_file
+    if curr_file != prev_file:
+        return True
+
+    # Large sequence gap (> 30 units) indicates a scene change even in the same file
+    if abs(curr.seq - prev.seq) > 30:
+        return True
+
+    return False
 
 
 class InterlocutorResolver:
@@ -184,8 +195,10 @@ class InterlocutorResolver:
 
     def __init__(self, history_window: int = 12) -> None:
         self._aliases: dict[str, str] = {}
+        self._speaker_aliases: dict[tuple[str, str], str] = {}
         self._prev_unit: Unit | None = None
         self._prev_speaker: str | None = None
+        self._last_listener: str | None = None
         # Recent spoken turns (speaker, seq) of the current scene. Narration, thoughts and
         # same-speaker runs do not break the "who was I talking to" memory.
         self._history_window = max(0, history_window)
@@ -194,9 +207,18 @@ class InterlocutorResolver:
     def reset(self) -> None:
         """Clear dynamic alias associations and turn-taking state for a new scene."""
         self._aliases.clear()
+        self._speaker_aliases.clear()
         self._prev_unit = None
         self._prev_speaker = None
+        self._last_listener = None
         self._recent_turns.clear()
+
+    def _register_alias(self, cand: str, target: str, spk: str | None = None) -> None:
+        """Register vocative/kinship title alias globally and with speaker-scoping."""
+        cand_clean = cand.strip().lower()
+        self._aliases[cand_clean] = target
+        if spk:
+            self._speaker_aliases[(spk.strip().lower(), cand_clean)] = target
 
     def _remember_turn(self, speaker: str | None, unit: Unit) -> None:
         if not speaker:
@@ -212,6 +234,7 @@ class InterlocutorResolver:
         spk: str,
         unit: Unit,
         active_speakers: set[str] | Sequence[str] | None,
+        allowed_targets: set[str] | None = None,
     ) -> tuple[str | None, str]:
         """Last-resort listener guess: recent other speaker, else the only other participant."""
         spk_lower = spk.lower()
@@ -220,18 +243,37 @@ class InterlocutorResolver:
                 if other.lower() == spk_lower:
                     continue
                 if 0 <= unit.seq - seq <= self._history_window:
+                    if allowed_targets and other.lower() not in allowed_targets:
+                        continue
                     return other, "recent_turn"
                 break
-        if active_speakers:
-            others = {
-                a.strip()
-                for a in active_speakers
-                if a
-                and a.strip().lower() != spk_lower
-                and a.strip().lower() not in _NON_DIALOGUE_TAGS
-            }
-            if len(others) == 1:
-                return next(iter(others)), "dyad"
+
+        speakers_pool = (
+            allowed_targets
+            if allowed_targets
+            else ({a.strip() for a in active_speakers} if active_speakers else set())
+        )
+        others = {
+            a.strip()
+            for a in speakers_pool
+            if a
+            and a.strip().lower() != spk_lower
+            and a.strip().lower() not in _NON_DIALOGUE_TAGS
+        }
+        if len(others) == 1:
+            return next(iter(others)), "dyad"
+
+        # Same-speaker continuation fallback: if same speaker is still speaking,
+        # preserve the last established listener if verified present and immediate.
+        if (
+            self._prev_speaker
+            and self._prev_speaker.lower() == spk_lower
+            and self._last_listener
+            and self._last_listener.lower() != spk_lower
+        ):
+            if not allowed_targets or self._last_listener.lower() in allowed_targets:
+                if self._prev_unit and 0 <= unit.seq - self._prev_unit.seq <= 4:
+                    return self._last_listener, "same_speaker_continuation"
         return None, "default"
 
     @staticmethod
@@ -292,6 +334,7 @@ class InterlocutorResolver:
         text: str,
         name_map: dict[str, str],
         speaker: str | None,
+        allowed_targets: set[str] | None = None,
     ) -> tuple[str | None, str | None]:
         """Extract vocatively addressed character from text, returning (target_tag, method)."""
         clean = text.strip()
@@ -301,12 +344,24 @@ class InterlocutorResolver:
         if not sentences:
             sentences = [clean]
 
+        def _lookup(cand: str) -> str | None:
+            tag = None
+            if speaker_norm and (speaker_norm, cand) in self._speaker_aliases:
+                tag = self._speaker_aliases[(speaker_norm, cand)]
+            if not tag:
+                tag = name_map.get(cand) or self._aliases.get(cand)
+            if tag and tag.lower() != speaker_norm:
+                if allowed_targets and tag.lower() not in allowed_targets:
+                    return None
+                return tag
+            return None
+
         # 1. Leading vocative in first sentence (highest priority)
         m = _LEADING_VOCATIVE_RE.match(sentences[0])
         if m:
             cand = self._clean_cand(m.group(1))
-            tag = name_map.get(cand) or self._aliases.get(cand)
-            if tag and tag.lower() != speaker_norm:
+            tag = _lookup(cand)
+            if tag:
                 return tag, "vocative"
 
         # 2. Trailing vocative in last sentence or any sentence (in reverse)
@@ -314,8 +369,8 @@ class InterlocutorResolver:
             m = _TRAILING_VOCATIVE_RE.search(s)
             if m:
                 cand = self._clean_cand(m.group(1))
-                tag = name_map.get(cand) or self._aliases.get(cand)
-                if tag and tag.lower() != speaker_norm:
+                tag = _lookup(cand)
+                if tag:
                     return tag, "vocative"
 
         # 3. Leading vocative in subsequent sentences
@@ -323,16 +378,16 @@ class InterlocutorResolver:
             m = _LEADING_VOCATIVE_RE.match(s)
             if m:
                 cand = self._clean_cand(m.group(1))
-                tag = name_map.get(cand) or self._aliases.get(cand)
-                if tag and tag.lower() != speaker_norm:
+                tag = _lookup(cand)
+                if tag:
                     return tag, "vocative"
 
-        # 4. Medial vocative
+        # 4. Medial vocative (only if strictly present in allowed_targets)
         for s in sentences:
             for m in _MEDIAL_VOCATIVE_RE.finditer(s):
                 cand = self._clean_cand(m.group(1))
-                tag = name_map.get(cand) or self._aliases.get(cand)
-                if tag and tag.lower() != speaker_norm:
+                tag = _lookup(cand)
+                if tag:
                     return tag, "vocative"
 
         return None, None
@@ -345,23 +400,32 @@ class InterlocutorResolver:
         known_names: dict[str, str] | None,
         prev_unit: Unit | None,
         src: str,
+        allowed_targets: set[str] | None = None,
     ) -> str | None:
         """Resolve kinship title addressee using candidate scoring."""
-        if cand in self._aliases:
-            target = self._aliases[cand]
-            if not spk or target.lower() != spk.lower():
-                return target
+        spk_lower = spk.lower() if spk else ""
+        cached = (
+            self._speaker_aliases.get((spk_lower, cand))
+            if spk_lower
+            else None
+        ) or self._aliases.get(cand)
+        if cached:
+            if not allowed_targets or cached.lower() in allowed_targets:
+                if not spk or cached.lower() != spk_lower:
+                    return cached
 
-        if not active_speakers:
+        pool = allowed_targets if allowed_targets else (
+            {a.strip() for a in active_speakers} if active_speakers else set()
+        )
+        if not pool:
             return None
 
-        spk_lower = spk.lower() if spk else ""
-        candidates = [a for a in active_speakers if a.lower() != spk_lower]
+        candidates = [a for a in pool if a.lower() != spk_lower]
         if not candidates:
             return None
         if len(candidates) == 1:
             target = candidates[0]
-            self._aliases[cand] = target
+            self._register_alias(cand, target, spk)
             return target
 
         prev_spk = prev_unit.speaker.lower() if prev_unit and prev_unit.speaker else None
@@ -400,17 +464,17 @@ class InterlocutorResolver:
         scored.sort(key=lambda x: x[1], reverse=True)
         if scored[0][1] > scored[1][1]:
             target = scored[0][0]
-            self._aliases[cand] = target
+            self._register_alias(cand, target, spk)
             return target
 
         if prev_spk:
             for c, _ in scored:
                 if c.lower() == prev_spk:
-                    self._aliases[cand] = c
+                    self._register_alias(cand, c, spk)
                     return c
 
         target = scored[0][0]
-        self._aliases[cand] = target
+        self._register_alias(cand, target, spk)
         return target
 
     def resolve(
@@ -419,6 +483,7 @@ class InterlocutorResolver:
         prev_unit: Unit | None = None,
         active_speakers: set[str] | Sequence[str] | None = None,
         known_names: dict[str, str] | None = None,
+        present_characters: set[str] | Sequence[str] | None = None,
     ) -> ResolvedInterlocutor:
         """Resolve speaker, listener, and monologue state in O(1) time."""
         effective_prev = prev_unit if prev_unit is not None else self._prev_unit
@@ -446,11 +511,22 @@ class InterlocutorResolver:
 
         name_map = self._build_name_map(active_speakers, known_names)
 
+        # Collect allowed active presence targets (if scene presence is explicitly specified)
+        allowed_targets: set[str] | None = None
+        if present_characters:
+            allowed_targets = {
+                p.strip().lower() for p in present_characters if p and p.strip()
+            }
+            allowed_targets.difference_update(_NON_DIALOGUE_TAGS)
+
         # 2. Vocative Detection on clean dialogue
-        vocative_target, _ = self._extract_vocative(clean_dial, name_map, spk)
+        vocative_target, _ = self._extract_vocative(
+            clean_dial, name_map, spk, allowed_targets=allowed_targets
+        )
         if vocative_target:
             self._prev_unit = unit
             self._prev_speaker = spk
+            self._last_listener = vocative_target
             self._remember_turn(spk, unit)
             return ResolvedInterlocutor(
                 speaker=spk,
@@ -477,10 +553,12 @@ class InterlocutorResolver:
                         known_names=known_names,
                         prev_unit=effective_prev,
                         src=clean_dial,
+                        allowed_targets=allowed_targets,
                     )
                     if target:
                         self._prev_unit = unit
                         self._prev_speaker = spk
+                        self._last_listener = target
                         self._remember_turn(spk, unit)
                         return ResolvedInterlocutor(
                             speaker=spk,
@@ -501,10 +579,12 @@ class InterlocutorResolver:
                         known_names=known_names,
                         prev_unit=effective_prev,
                         src=clean_dial,
+                        allowed_targets=allowed_targets,
                     )
                     if target:
                         self._prev_unit = unit
                         self._prev_speaker = spk
+                        self._last_listener = target
                         self._remember_turn(spk, unit)
                         return ResolvedInterlocutor(
                             speaker=spk,
@@ -521,28 +601,34 @@ class InterlocutorResolver:
             prev_is_mono, _ = _analyze_monologue_and_dialogue(prev_src)
             prev_is_non_dialogue = prev_spk.lower() in _NON_DIALOGUE_TAGS or prev_is_mono
             if prev_spk.lower() != spk_lower and not prev_is_non_dialogue:
-                # Dynamically register any vocative titles used in current unit to prev_spk
-                for s in sentences:
-                    m_t = _TRAILING_VOCATIVE_RE.search(s)
-                    if m_t:
-                        c = self._clean_cand(m_t.group(1))
-                        if c in _KINSHIP_WORDS and c not in self._aliases:
-                            self._aliases[c] = prev_spk
-                self._prev_unit = unit
-                self._prev_speaker = spk
-                self._remember_turn(spk, unit)
-                return ResolvedInterlocutor(
-                    speaker=spk,
-                    listener=prev_spk,
-                    is_monologue=False,
-                    detected_emotion=emotion,
-                    resolution_method="turn_taking",
-                )
+                if not allowed_targets or prev_spk.lower() in allowed_targets:
+                    # Dynamically register any vocative titles used in current unit to prev_spk
+                    for s in sentences:
+                        m_t = _TRAILING_VOCATIVE_RE.search(s)
+                        if m_t:
+                            c = self._clean_cand(m_t.group(1))
+                            if c in _KINSHIP_WORDS:
+                                self._register_alias(c, prev_spk, spk)
+                    self._prev_unit = unit
+                    self._prev_speaker = spk
+                    self._last_listener = prev_spk
+                    self._remember_turn(spk, unit)
+                    return ResolvedInterlocutor(
+                        speaker=spk,
+                        listener=prev_spk,
+                        is_monologue=False,
+                        detected_emotion=emotion,
+                        resolution_method="turn_taking",
+                    )
 
         # 5. Fallbacks: narration between turns, same-speaker runs, two-person scenes
-        fb_listener, fb_method = self._fallback_listener(spk, unit, active_speakers)
+        fb_listener, fb_method = self._fallback_listener(
+            spk, unit, active_speakers, allowed_targets=allowed_targets
+        )
         self._prev_unit = unit
         self._prev_speaker = spk
+        if fb_listener:
+            self._last_listener = fb_listener
         self._remember_turn(spk, unit)
         return ResolvedInterlocutor(
             speaker=spk,
@@ -674,6 +760,13 @@ def format_rich_dialogue_line(
                 or cp_spk.pronoun_map.get(tgt_name)
                 or cp_spk.pronoun_map.get(tgt_key.lower())
             )
+            if not p_rule:
+                is_mc = (
+                    tgt_key.lower() in _PROTAGONIST_TAGS
+                    or (cp_lis is not None and "protagonist" in (cp_lis.role or "").lower())
+                )
+                if is_mc:
+                    p_rule = cp_spk.pronoun_map.get("mc") or cp_spk.pronoun_map.get("player")
             if p_rule:
                 rule_clean = p_rule.strip()
                 if " - " in rule_clean and not rule_clean.startswith("xưng"):
@@ -739,11 +832,7 @@ QUOTED_RULES = (
     "QUY TẮC BẮT BUỘC:\n"
     "1. Giữ NGUYÊN VẸN 100% mọi placeholder đặc biệt có dạng ⟦V1⟧, ⟦T1⟧, ⟦/T1⟧, ⟦E1⟧, ⟦L1⟧...\n"
     "   Tuyệt đối không dịch, không xoá, không đổi hoa/thường, không sửa nội dung bên trong.\n"
-    "2. BẢNG THUẬT NGỮ (GLOSSARY) LÀ TỐI THƯỢNG:\n"
-    "   - Bắt buộc dịch đúng 100% theo Glossary đã cung cấp (VD: Sect -> Tông môn...).\n"
-    "   - TUYỆT ĐỐI KHÔNG để sót từ tiếng Anh trong câu dịch khi từ đó đã có trong Glossary.\n"
-    "   - Giữ nhất quán tuyệt đối trong cùng một câu và giữa các câu liên tiếp.\n"
-    "3. QUY TẮC XƯNG HÔ ĐỐI ỨNG (PRONOUNS) - TUYỆT ĐỐI CẤM ĐẢO NGƯỢC:\n"
+    "2. QUY TẮC XƯNG HÔ ĐỐI ỨNG (PRONOUNS) - TUYỆT ĐỐI CẤM ĐẢO NGƯỢC:\n"
     "   Khi nhân vật nói chuyện theo quy tắc [xưng X, gọi Y]:\n"
     "   - ĐẠI TỪ NGÔI THỨ NHẤT (I, me, my, we): BẮT BUỘC dịch là X (tự xưng). "
     "TUYỆT ĐỐI CẤM dịch thành Y.\n"
@@ -761,15 +850,15 @@ QUOTED_RULES = (
     "   - TUYỆT ĐỐI KHÔNG đảo ngược vai vế (ví dụ: Đệ tử xưng 'ta' gọi bề trên 'ngươi' là SAI;\n"
     "     phải xưng 'con/đệ tử' gọi 'sư phụ/cha/mẹ').\n"
     "   - TUYỆT ĐỐI KHÔNG đổi ngôi xưng hô thất thường trong cùng một câu thoại.\n"
-    "4. Lời thoại súc tích, tự nhiên, văn phong visual novel, tránh dịch word-by-word.\n"
+    "3. Lời thoại súc tích, tự nhiên, văn phong visual novel, tránh dịch word-by-word.\n"
     "   Giữ độ dài vừa phải để không làm tràn textbox.\n"
-    "5. QUY TẮC NỘI DUNG LỜI THOẠI:\n"
+    "4. QUY TẮC NỘI DUNG LỜI THOẠI:\n"
     "   - Nhãn [Người nói: ...] ở dòng nguồn chỉ dùng làm ngữ cảnh xưng hô.\n"
     "   - TUYỆT ĐỐI KHÔNG chép lại nhãn [Người nói: ...] hay tên nhân vật vào chuỗi kết quả.\n"
     '   - TUYỆT ĐỐI KHÔNG bọc bản dịch trong dấu ngoặc kép ngoài cùng (không dùng " hay \\").\n'
     "   - TUYỆT ĐỐI CHỈ dùng chữ quốc ngữ tiếng Việt. TUYỆT ĐỐI CẤM sử dụng bất kỳ "
     "chữ Hán / tiếng Trung (Hanzi/Kanji) hay lặp từ vô tận.\n"
-    '6. ĐỊNH DẠNG ĐẦU RA: Trả về DUY NHẤT một đối tượng JSON: {"id_1": "Bản dịch 1", ...}\n'
+    '5. ĐỊNH DẠNG ĐẦU RA: Trả về DUY NHẤT một đối tượng JSON: {"id_1": "Bản dịch 1", ...}\n'
     "   - Bắt buộc giữ NGUYÊN VẸN 100% ID của từng dòng làm key JSON "
     '(bao gồm tiền tố s: hay d:, VD: "s:abc" -> key là "s:abc", không được lược bỏ "s:").\n'
     "   - Đóng ngoặc nhọn } và DỪNG NGAY LẬP TỨC. Tuyệt đối không thêm lời giải thích, "
@@ -866,13 +955,13 @@ class ContextBuilder:
         """Calculate reserved completion token budget for a batch size.
 
         Dynamically sizes completion token reservation based on source token volume
-        while respecting bounds [350, min(3000, n_ctx // 2)].
+        while respecting bounds [350, min(max_bound, target)].
         """
         if source_tokens > 0:
-            target = int(source_tokens * 1.35) + batch_size * 25 + 64
+            target = int(source_tokens * 1.6) + batch_size * 40 + 128
         else:
             target = batch_size * 80 + 150
-        max_bound = min(3000, n_ctx // 2) if n_ctx >= 6000 else (n_ctx // 2)
+        max_bound = min(4096, n_ctx // 2) if n_ctx >= 8000 else min(3000, n_ctx // 2)
         return max(350, min(max_bound, target))
 
     def _compact_lookback(
@@ -947,6 +1036,9 @@ class ContextBuilder:
         characters = characters or {}
         fuzzy_matches = fuzzy_matches or {}
 
+        # Strictly order dialogue units by sequence (seq) to ensure unbroken chronological context
+        batch_units = sorted(batch_units, key=lambda u: (u.seq, u.uid))
+
         # Character lookup index mapping both tag and display_name (case-insensitive)
         char_map: dict[str, CharacterProfile] = {}
         for p in characters.values():
@@ -961,6 +1053,14 @@ class ContextBuilder:
         active_resolver = resolver
         if active_resolver is None and graph is not None:
             active_resolver = InterlocutorResolver()
+
+        present_characters: set[str] = set()
+        if scene_macro and scene_macro.active_characters:
+            present_characters.update(scene_macro.active_characters)
+        elif scene_summary:
+            sc_chars = getattr(scene_summary, "active_characters", None)
+            if sc_chars:
+                present_characters.update(sc_chars)
 
         if active_resolver is not None:
             active_speakers = {
@@ -985,6 +1085,7 @@ class ContextBuilder:
                         prev_unit=prev_unit,
                         active_speakers=active_speakers,
                         known_names=known_names,
+                        present_characters=present_characters if present_characters else None,
                     )
                 else:
                     resolved = ResolvedInterlocutor(
@@ -1040,6 +1141,11 @@ class ContextBuilder:
                     and item.speaker.lower() not in _NON_DIALOGUE_TAGS
                     and item.speaker.lower() != single_lower
                 ):
+                    if (
+                        present_characters
+                        and item.speaker.lower() not in {p.lower() for p in present_characters}
+                    ):
+                        continue
                     active_dialogue_speakers.append(item.speaker)
                     break
 
@@ -1205,44 +1311,6 @@ class ContextBuilder:
             if tokens <= available_budget:
                 sections.append(rel_block)
                 available_budget -= tokens
-
-        # 3.3 Dynamic Batch Glossary & Proper Candidates
-        if glossary_matches and available_budget > 100:
-            gl_lines = ["THUẬT NGỮ BẮT BUỘC (GLOSSARY):"]
-            candidate_terms: list[str] = []
-            for g in glossary_matches:
-                if g.translation.strip():
-                    note_str = f" ({g.notes})" if g.notes else ""
-                    gl_lines.append(f"- {g.term} -> {g.translation}{note_str}")
-                elif g.kind in ("name", "location", "proper", "candidate") or not g.kind:
-                    candidate_terms.append(g.term)
-
-            if len(gl_lines) > 1:
-                gl_block = "\n".join(gl_lines)
-                tokens = estimate_tokens(gl_block)
-                if tokens <= available_budget:
-                    sections.append(gl_block)
-                    available_budget -= tokens
-
-            known_char_names = {
-                cp.display_name.lower() for cp in characters.values() if cp.display_name
-            } | set(characters.keys())
-
-            filtered_candidates = [
-                ct for ct in candidate_terms if ct.lower() not in known_char_names
-            ]
-
-            if filtered_candidates and available_budget > 60:
-                cand_block = (
-                    "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT:\n- "
-                    + ", ".join(filtered_candidates[:8])
-                    + "\n(dịch nghĩa chính xác hoặc phiên âm tự nhiên"
-                    + " phù hợp ngữ cảnh, không bỏ sót)"
-                )
-                tokens = estimate_tokens(cand_block)
-                if tokens <= available_budget:
-                    sections.append(cand_block)
-                    available_budget -= tokens
 
         # 3.4 Lookback History
         if self.config.batch.lookback > 0 and lookback and available_budget > 60:

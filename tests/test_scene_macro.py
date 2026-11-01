@@ -305,8 +305,7 @@ class TestContextIntegration:
         )
 
         prompt = cb.build_user_prompt(units, bundle=bundle)
-        assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY):" in prompt
-        assert "- light -> ánh sáng" in prompt
+        assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY):" not in prompt
         assert "BỐI CẢNH PHÂN CẢNH & TÓM TẮT CẢNH HIỆN TẠI (SCENE MACRO CONTEXT):" in prompt
         assert "- Phân cảnh (Scene Label): scene_dawn" in prompt
 

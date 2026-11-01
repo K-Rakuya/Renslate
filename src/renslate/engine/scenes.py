@@ -42,6 +42,7 @@ __all__ = [
     "load_scene_contexts",
     "parse_scene_result",
     "summarize_scenes_with_llm",
+    "summarize_single_scene_with_llm",
 ]
 
 _CTX_PREFIX = "scene_ctx:"
@@ -157,6 +158,104 @@ def _load_ctx(db: Database, scene: SceneSummary) -> dict[str, Any] | None:
     if data.get("first_seq") != scene.first_seq or data.get("label") != scene.label:
         return None
     return data
+
+
+def summarize_single_scene_with_llm(
+    project: Project,
+    db: Database,
+    llm: Any,
+    scene: SceneSummary,
+    *,
+    min_lines: int = 2,
+    force: bool = False,
+    budget_tokens: int = 1400,
+    units: Sequence[Unit] | None = None,
+    seqs: Sequence[int] | None = None,
+    characters: Mapping[str, CharacterProfile] | None = None,
+    scenes: Sequence[SceneSummary] | None = None,
+) -> SceneMacroContext | None:
+    """Summarise a single scene on demand using LLM and return its rich SceneMacroContext."""
+    ctx = _load_ctx(db, scene)
+    if ctx and ctx.get("summary") and not force:
+        metadata: dict[str, Any] = {}
+        if ctx.get("previous_summary"):
+            metadata["previous_summary"] = ctx["previous_summary"]
+        return SceneMacroContext(
+            scene_id=scene.scene_id,
+            label=scene.label,
+            summary=str(ctx["summary"]),
+            location=str(ctx.get("location") or ""),
+            atmosphere=str(ctx.get("atmosphere") or ""),
+            temporal_anchor=str(ctx.get("time") or ""),
+            first_seq=scene.first_seq,
+            last_seq=scene.last_seq,
+            metadata=metadata,
+        )
+
+    if llm is None:
+        return None
+
+    if units is None:
+        units = sorted(db.all_units(), key=lambda u: u.seq)
+    if seqs is None:
+        seqs = [u.seq for u in units]
+    if characters is None:
+        characters = db.get_characters()
+
+    lines = _scene_lines(units, seqs, scene, characters)
+    if sum(1 for spk, _ in lines if spk != "Dẫn truyện") < min_lines:
+        return None
+
+    if scenes is None:
+        scenes = sorted(db.get_scenes(), key=lambda s: s.first_seq)
+
+    previous: list[str] = []
+    pos = next((i for i, s in enumerate(scenes) if s.scene_id == scene.scene_id), -1)
+    if pos > 0:
+        for prev_sc in scenes[max(0, pos - 2) : pos]:
+            prev_ctx = _load_ctx(db, prev_sc)
+            if prev_ctx and prev_ctx.get("summary"):
+                previous.append(str(prev_ctx["summary"]))
+
+    prompt = build_scene_prompt(scene, lines, previous, budget_tokens=budget_tokens)
+    try:
+        result, _, _ = llm.complete_json(SCENE_SYSTEM_PROMPT, prompt, max_tokens=512)
+    except Exception as exc:
+        _LOG.warning("Tóm tắt JIT phân cảnh %s thất bại: %s", scene.scene_id, exc)
+        return None
+
+    parsed = parse_scene_result(result)
+    if parsed is None:
+        _LOG.info("Phân cảnh %s: phản hồi LLM không hợp lệ, bỏ qua.", scene.scene_id)
+        return None
+
+    payload = {
+        **parsed,
+        "label": scene.label,
+        "first_seq": scene.first_seq,
+        "last_seq": scene.last_seq,
+        "previous_summary": previous[-1] if previous else "",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with db.transaction():
+        db.save_scene(dataclasses.replace(scene, summary=parsed["summary"]))
+        db.set_meta(_CTX_PREFIX + scene.scene_id, json.dumps(payload, ensure_ascii=False))
+
+    metadata = {}
+    if previous:
+        metadata["previous_summary"] = previous[-1]
+
+    return SceneMacroContext(
+        scene_id=scene.scene_id,
+        label=scene.label,
+        summary=parsed["summary"],
+        location=parsed.get("location") or "",
+        atmosphere=parsed.get("atmosphere") or "",
+        temporal_anchor=parsed.get("time") or "",
+        first_seq=scene.first_seq,
+        last_seq=scene.last_seq,
+        metadata=metadata,
+    )
 
 
 def summarize_scenes_with_llm(

@@ -7,6 +7,7 @@ its fingerprint, so a stale store or malformed markup aborts the whole operation
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass
@@ -47,12 +48,28 @@ def _render(kind: UnitKind, line: str, target: str) -> str | None:
         indent = line[: len(line) - len(line.lstrip())]
         return f'{indent}{say.prefix}"{encode_say_text(target)}"{say.suffix}'
     parsed = parse_string_line(line, "new")
-    if parsed is None:
-        raise ApplyError("không phải dòng 'new'")
-    head, current = parsed
-    if current == target:
-        return None
-    return f'{head}"{quote_python_text(target)}"'
+    if parsed is not None:
+        head, current = parsed
+        if current == target:
+            return None
+        return f'{head}"{quote_python_text(target)}"'
+
+    # Fallback for raw script UI slots (e.g. extracted directly from game/*.rpy before tl generation)
+    from renslate.renpy.extract import _UI_PATTERNS
+    from renslate.renpy.literals import parse_python_string
+
+    for _, pat in _UI_PATTERNS:
+        m = pat.search(line)
+        if m:
+            lit = m.group("lit")
+            raw_val = parse_python_string(lit)
+            if raw_val is not None:
+                if raw_val == target:
+                    return None
+                start, end = m.span("lit")
+                return line[:start] + f'"{quote_python_text(target)}"' + line[end:]
+
+    raise ApplyError("không phải dòng 'new' và không phải chuỗi giao diện hợp lệ")
 
 
 def _summarise(problems: list[str]) -> str:
@@ -153,39 +170,27 @@ def apply_translations(
         write_atomic(project.root / relative, text_file.to_bytes())
     with database.transaction():
         database.update_fingerprints(updates)
+
+    # Ensure font setup is automatically generated for correct Vietnamese rendering
+    with contextlib.suppress(Exception):
+        setup_vietnamese_support(project)
+
     return report
 
 
-def setup_vietnamese_support(project: Project, *, font_file: str = "DejaVuSans.ttf") -> Path:
-    """Generate renslate_setup.rpy to configure Unicode font support for the target language."""
-    target_lang = project.config.target_lang
-    content = f"""\
-# renslate_setup.rpy — Cấu hình tiếng Việt cho Ren'Py
-# Tự động tạo bởi renslate
+def setup_vietnamese_support(
+    project: Project,
+    *,
+    font_file: str | None = None,
+    serif_font: str | None = None,
+    auto_replace_game_fonts: bool = True,
+) -> Path:
+    """Generate renslate_setup.rpy to configure Unicode font support and font mapping for Ren'Py."""
+    from renslate.renpy.fonts import setup_vietnamese_support as _setup_fonts
 
-init 10 python:
-    _orig_replace_text = getattr(config, "replace_text", None)
-    def _vi_replace_text(s):
-        if _orig_replace_text:
-            s = _orig_replace_text(s)
-        if renpy.game.preferences.language == "{target_lang}":
-            translated = renpy.translation.translate_string(s)
-            if translated != s:
-                return translated
-        return s
-    config.replace_text = _vi_replace_text
-
-translate {target_lang} python:
-    # Thiết lập phông chữ hỗ trợ đầy đủ ký tự tiếng Việt
-    _vi_font = "{font_file}"
-    if renpy.loadable(_vi_font):
-        gui.text_font = _vi_font
-        gui.name_text_font = _vi_font
-        gui.interface_text_font = _vi_font
-        gui.button_text_font = _vi_font
-        gui.choice_button_text_font = _vi_font
-"""
-    dest = project.tl_root / "renslate_setup.rpy"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
-    return dest
+    return _setup_fonts(
+        project,
+        font_file=font_file,
+        serif_font=serif_font,
+        auto_replace_game_fonts=auto_replace_game_fonts,
+    )

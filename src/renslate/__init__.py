@@ -200,6 +200,7 @@ _LEGACY_MAP: dict[str, str] = {
     "renslate.parser": "renslate.renpy.parser",
     "renslate.mask": "renslate.renpy.mask",
     "renslate.extract": "renslate.renpy.extract",
+    "renslate.fonts": "renslate.renpy.fonts",
     "renslate.writer": "renslate.renpy.writer",
     "renslate.sdk": "renslate.renpy.sdk",
     "renslate.builtin_ui": "renslate.renpy.builtin_ui",

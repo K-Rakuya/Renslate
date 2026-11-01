@@ -908,22 +908,97 @@ def _extract_menu_strings(
                 )
 
 
+def _extract_from_sl_node(
+    node: Any, filename: str, linenumber: int, out_strings: list[ExtractedUIString]
+) -> None:
+    """Traverse Ren'Py Screen Language (SLScreen / SLDisplayable) AST nodes for translatable strings."""
+    if node is None:
+        return
+
+    # 1. Positional arguments (e.g. _("Start"), Text("..."))
+    pos_list = getattr(node, "positional", None)
+    if isinstance(pos_list, list):
+        for pos in pos_list:
+            if isinstance(pos, str):
+                _extract_strings_from_text(pos, filename, linenumber, out_strings)
+
+    # 2. Keyword arguments (e.g. tooltip=_("..."), action=...)
+    kw_list = getattr(node, "keyword", None)
+    if isinstance(kw_list, list):
+        for item in kw_list:
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                val = item[1]
+                if isinstance(val, str):
+                    _extract_strings_from_text(val, filename, linenumber, out_strings)
+
+    # 3. Children displayables
+    children = getattr(node, "children", None)
+    if isinstance(children, list):
+        for child in children:
+            _extract_from_sl_node(
+                child, filename, getattr(child, "linenumber", linenumber), out_strings
+            )
+
+    # 4. Conditional branches (SLIf entries)
+    entries = getattr(node, "entries", None)
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                _extract_from_sl_node(entry[1], filename, linenumber, out_strings)
+            else:
+                _extract_from_sl_node(entry, filename, linenumber, out_strings)
+
+    # 5. Block statement containers
+    block = getattr(node, "block", None)
+    if isinstance(block, list):
+        for b in block:
+            if hasattr(b, "screen"):
+                _extract_from_sl_node(
+                    b.screen, filename, getattr(b, "linenumber", linenumber), out_strings
+                )
+            else:
+                _extract_from_sl_node(
+                    b, filename, getattr(b, "linenumber", linenumber), out_strings
+                )
+
+
 def extract_rpyc_file(rpyc_path: Path | str) -> ExtractedScript:
     """Extract translatable dialogue and UI strings directly from a .rpyc file."""
     path = Path(rpyc_path)
     with RpycFile(path) as rpyc:
         # Prefer Slot 2 (post static transforms with TranslateSay & canonical IDs)
-        loaded = rpyc.load_slot(SLOT_STATEMENTS_POST)
-        if loaded is None:
-            # Fall back to Slot 1 (pre-transforms)
-            loaded = rpyc.load_slot(SLOT_STATEMENTS_PRE)
+        loaded_post = rpyc.load_slot(SLOT_STATEMENTS_POST)
+        # Also load Slot 1 (pre-transforms where SLScreen AST and raw UI strings reside)
+        loaded_pre = rpyc.load_slot(SLOT_STATEMENTS_PRE)
 
-    stmts = _unpack_stmts(loaded)
     out = ExtractedScript()
     default_name = path.with_suffix(".rpy").name
 
-    for stmt in stmts:
+    # 1. Extract dialogue and static statements from Slot 2 (or Slot 1 fallback)
+    stmts_post = _unpack_stmts(loaded_post) if loaded_post is not None else _unpack_stmts(loaded_pre)
+    for stmt in stmts_post:
         _extract_from_node(stmt, default_name, out)
+
+    # 2. Extract screen language AST directly from Slot 1
+    stmts_pre = _unpack_stmts(loaded_pre) if loaded_pre is not None else []
+    for stmt in stmts_pre:
+        if type(stmt).__name__ == "Screen":
+            _extract_from_sl_node(getattr(stmt, "screen", None), default_name, 0, out.strings)
+        elif type(stmt).__name__ == "Init" and hasattr(stmt, "block") and isinstance(stmt.block, list):
+            for child in stmt.block:
+                if type(child).__name__ == "Screen":
+                    _extract_from_sl_node(
+                        getattr(child, "screen", None), default_name, 0, out.strings
+                    )
+
+    # Deduplicate extracted strings while preserving order
+    unique_strings: list[ExtractedUIString] = []
+    seen: set[str] = set()
+    for s in out.strings:
+        if s.text not in seen:
+            seen.add(s.text)
+            unique_strings.append(s)
+    out.strings = unique_strings
 
     return out
 
@@ -1106,11 +1181,23 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
 
             target_file.write_text("\n".join(lines), encoding="utf-8")
             generated_files.append(target_file)
-
-        for s in script.strings:
-            if s.text not in seen_ui:
+        elif script.strings:
+            str_lines = [f"translate {target_lang} strings:", ""]
+            for s in script.strings:
+                escaped = quote_python_text(s.text)
+                str_lines.append(f"    # {s.filename}:{s.linenumber}")
+                str_lines.append(f'    old "{escaped}"')
+                str_lines.append('    new ""')
+                str_lines.append("")
                 seen_ui.add(s.text)
-                ui_strings.append((s.filename, s.linenumber, s.text))
+            target_file.write_text("\n".join(str_lines), encoding="utf-8")
+            generated_files.append(target_file)
+
+        if script.dialogue and script.strings:
+            for s in script.strings:
+                if s.text not in seen_ui:
+                    seen_ui.add(s.text)
+                    ui_strings.append((s.filename, s.linenumber, s.text))
 
     if ui_strings:
         ui_file = tl_root / "ui_strings.rpy"

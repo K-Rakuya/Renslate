@@ -57,8 +57,7 @@ def test_user_prompt_with_all_priorities() -> None:
     )
 
     assert "d:intro" in user_prompt
-    assert "GLOSSARY" in user_prompt
-    assert "Eileen -> Eileen" in user_prompt
+    assert "GLOSSARY" not in user_prompt
     assert "HỒ SƠ NHÂN VẬT" in user_prompt
     assert "Heroine" in user_prompt
     assert "NGỮ CẢNH CÁC CÂU THOẠI LIỀN TRƯỚC" in user_prompt
@@ -68,13 +67,11 @@ def test_empty_glossary_candidate_is_injected_as_candidate() -> None:
     cfg = Config()
     builder = ContextBuilder(cfg)
     unit = Unit("d:test", UnitKind.DIALOGUE, 1, "Hello", Status.PENDING)
-    # Candidate with empty translation should not appear in mandatory GLOSSARY,
-    # but should be actively surfaced under DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT.
-    glossary = [GlossaryEntry("CandidateTerm", "", kind="candidate")]
+    glossary = [GlossaryEntry("CandidateTerm", "", kind="candidate"), GlossaryEntry("Sect", "Tông môn")]
     prompt = builder.build_user_prompt(batch_units=[unit], glossary_matches=glossary)
     assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY)" not in prompt
-    assert "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT" in prompt
-    assert "CandidateTerm" in prompt
+    assert "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT" not in prompt
+    assert "GLOSSARY" not in prompt
 
 
 def test_relational_pronouns_with_pseudo_speakers_and_multi_characters() -> None:

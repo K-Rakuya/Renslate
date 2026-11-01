@@ -57,14 +57,12 @@ def test_stable_prefix_ordering_and_layer_hierarchy() -> None:
     # Layer 3.2: Talking Pairs
     idx_rel = user_prompt.index("QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN:")
 
-    # Layer 3.3: Glossary
-    idx_glossary = user_prompt.index("THUẬT NGỮ BẮT BUỘC (GLOSSARY):")
-
     # Layer 3.6: Dialogue Units
     idx_dialogue = user_prompt.index("CÁC DÒNG CẦN DỊCH")
 
-    # Verify strict hierarchy: Layer 2 < Layer 3.1 < Layer 3.2 < Layer 3.3 < Layer 3.6
-    assert idx_chars < idx_scene < idx_rel < idx_glossary < idx_dialogue
+    # Verify strict hierarchy: Layer 2 < Layer 3.1 < Layer 3.2 < Layer 3.6 (Glossary removed)
+    assert idx_chars < idx_scene < idx_rel < idx_dialogue
+    assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY):" not in user_prompt
 
 
 def test_prefix_cache_invariance_across_different_batches() -> None:

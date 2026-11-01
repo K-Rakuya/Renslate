@@ -23,7 +23,11 @@ from renslate.engine.analyze import (
     StylometricSummary,
     bootstrap_characters_with_llm,
     build_persona_user_prompt,
+    collect_incoming_vocatives,
     extract_character_definitions,
+    extract_interactive_dialogue_exchanges,
+    extract_interaction_network,
+    extract_salient_locations,
     extract_stylometrics,
     infer_character_gender_nlp,
     infer_character_role_nlp,
@@ -879,3 +883,120 @@ def test_run_analysis_relational_graph_and_persona(tmp_path: Path) -> None:
 
     assert project.relationships_path.is_file()
     assert project.characters_path.is_file()
+
+
+def test_extract_interactive_dialogue_exchanges() -> None:
+    chars = {
+        "mc": CharacterProfile(tag="mc", display_name="Hero"),
+        "charlotte": CharacterProfile(tag="charlotte", display_name="Charlotte"),
+        "sebastian": CharacterProfile(tag="sebastian", display_name="Sebastian"),
+    }
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "Are you ready to head out, Charlotte?", Status.PENDING, speaker="mc", label="scene1"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "Always ready. Don't slow me down.", Status.PENDING, speaker="charlotte", label="scene1"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Did you hear that strange noise?", Status.PENDING, speaker="charlotte", label="scene1"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "Stay behind me, I will check it out.", Status.PENDING, speaker="mc", label="scene1"),
+        # Separate scene for Sebastian & Charlotte
+        Unit("d:5", UnitKind.DIALOGUE, 10, "My Lady, your tea is served.", Status.PENDING, speaker="sebastian", label="scene2"),
+        Unit("d:6", UnitKind.DIALOGUE, 11, "Thank you, Sebastian.", Status.PENDING, speaker="charlotte", label="scene2"),
+    ]
+
+    exchanges = extract_interactive_dialogue_exchanges(units, ["charlotte", "sebastian"], chars, mc_tag="mc")
+
+    # Charlotte exchanges with MC
+    assert "charlotte" in exchanges
+    ch_ex = exchanges["charlotte"]
+    assert len(ch_ex) >= 1
+    assert any("Hero:" in ex and "Charlotte:" in ex for ex in ch_ex)
+
+    # Sebastian exchanges with Charlotte (since sebastian has no MC interactions)
+    assert "sebastian" in exchanges
+    seb_ex = exchanges["sebastian"]
+    assert len(seb_ex) >= 1
+    assert any("Sebastian:" in ex and "Charlotte:" in ex for ex in seb_ex)
+
+
+def test_collect_incoming_vocatives() -> None:
+    chars = {
+        "mc": CharacterProfile(tag="mc", display_name="Hero"),
+        "charlotte": CharacterProfile(tag="charlotte", display_name="Charlotte"),
+    }
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "Good morning, Lady Charlotte.", Status.PENDING, speaker="mc"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "Right away, Lady Charlotte!", Status.PENDING, speaker="guard"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Charlotte-sama, please be careful!", Status.PENDING, speaker="maid"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "I am Charlotte, hear me roar!", Status.PENDING, speaker="charlotte"),  # self-speech ignored
+    ]
+
+    vocatives = collect_incoming_vocatives(units, ["charlotte"], chars)
+    assert "charlotte" in vocatives
+    voc_list = vocatives["charlotte"]
+    assert any("Lady Charlotte" in v for v in voc_list)
+    assert any("Charlotte-sama" in v for v in voc_list)
+
+
+def test_extract_interaction_network() -> None:
+    chars = {
+        "mc": CharacterProfile(tag="mc", display_name="Hero"),
+        "charlotte": CharacterProfile(tag="charlotte", display_name="Charlotte"),
+        "sebastian": CharacterProfile(tag="sebastian", display_name="Sebastian"),
+    }
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "Line 1", Status.PENDING, speaker="mc"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "Line 2", Status.PENDING, speaker="charlotte"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Line 3", Status.PENDING, speaker="mc"),
+        Unit("d:4", UnitKind.DIALOGUE, 4, "Line 4", Status.PENDING, speaker="charlotte"),
+        Unit("d:5", UnitKind.DIALOGUE, 5, "Line 5", Status.PENDING, speaker="sebastian"),
+        Unit("d:6", UnitKind.DIALOGUE, 6, "Line 6", Status.PENDING, speaker="charlotte"),
+    ]
+
+    network = extract_interaction_network(units, ["charlotte"], chars)
+    assert "charlotte" in network
+    net_list = network["charlotte"]
+    # Charlotte interacted 4 times with mc and 1 time with sebastian
+    assert any("Hero" in p for p in net_list)
+    assert any("Sebastian" in p for p in net_list)
+
+
+def test_extract_salient_locations() -> None:
+    units = [
+        Unit("d:1", UnitKind.DIALOGUE, 1, "Palace line 1", Status.PENDING, speaker="queen", label="palace_hall"),
+        Unit("d:2", UnitKind.DIALOGUE, 2, "Palace line 2", Status.PENDING, speaker="queen", label="palace_hall"),
+        Unit("d:3", UnitKind.DIALOGUE, 3, "Garden line 1", Status.PENDING, speaker="queen", label="garden_sunset"),
+    ]
+
+    locations = extract_salient_locations(units, ["queen"])
+    assert "queen" in locations
+    loc_list = locations["queen"]
+    assert len(loc_list) >= 1
+    assert any("Cung điện" in loc or "Vườn hoa" in loc for loc in loc_list)
+
+
+def test_build_persona_user_prompt_with_deep_context() -> None:
+    chars = {"c": CharacterProfile("c", "Charlotte")}
+    samples = {"c": ["B-Baka!", "Don't look at me!"]}
+    stys = {"c": extract_stylometrics(samples["c"])}
+    exchanges = {"c": ['Hero: "Hello" ➔ Charlotte: "Go away"']}
+    vocatives = {"c": ["Lady Charlotte", "Charlotte-sama"]}
+    partners = {"c": ["Hero (80%)", "Sebastian (20%)"]}
+    locations = {"c": ["Phòng hội đồng (Council Hall)"]}
+
+    prompt = build_persona_user_prompt(
+        ["c"],
+        chars,
+        samples,
+        stys,
+        interactive_exchanges_by_speaker=exchanges,
+        vocatives_by_speaker=vocatives,
+        interaction_partners_by_speaker=partners,
+        salient_locations_by_speaker=locations,
+    )
+
+    assert "Tag: c" in prompt
+    assert "Charlotte" in prompt
+    assert "Không gian xuất hiện tiêu biểu: Phòng hội đồng (Council Hall)" in prompt
+    assert "Mạng lưới bạn thoại chính: Hero (80%), Sebastian (20%)" in prompt
+    assert "Danh xưng/Hô ngữ người khác dùng khi gọi: Lady Charlotte, Charlotte-sama" in prompt
+    assert 'Hero: "Hello" ➔ Charlotte: "Go away"' in prompt
+    assert "B-Baka!" in prompt
+
