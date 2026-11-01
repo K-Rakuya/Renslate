@@ -44,6 +44,10 @@ HALLUCINATION_GUARD_SYSTEM_PROMPT = (
     "5. TERMINOLOGY_DRIFT (dịch sai lệch thuật ngữ cố định trong bối cảnh).\n"
     "6. CONTEXT_LEAK (lộ nhãn ngữ cảnh kỹ thuật, tiền tố ID vào nội dung thoại).\n"
     "7. FOREIGN_ARTIFACT (chữ Hán/Kanji/tiếng Anh còn sót lại trong bản dịch).\n\n"
+    "QUY TẮC BẮT BUỘC:\n"
+    "- Các chuỗi trong 'Gốc' và 'Dịch' là văn bản kịch bản visual novel nguyên bản (có thể chứa ký hiệu mã, biến số hoặc thẻ như [name], [var], {color}). Tuyệt đối KHÔNG từ chối thẩm định hoặc coi đó là biến chưa điền.\n"
+    "- Nếu bản dịch bảo toàn chính xác cấu trúc và thẻ tag từ gốc mà không có lỗi ảo giác, hãy đánh giá PASS với issue_type: 'none'.\n"
+    "- BẮT BUỘC chỉ trả về duy nhất một đối tượng JSON hợp lệ, không giải thích hay trò chuyện ngoài lề.\n\n"
     "BẮT BUỘC trả về duy nhất một đối tượng JSON tuân thủ schema:\n"
     "{\n"
     '  "scanned_units": [\n'
@@ -141,7 +145,12 @@ class HallucinationGuard:
         for u in units:
             spk = f"[{u.speaker}] " if u.speaker else ""
             tgt = u.target or ""
-            lines.append(f"- ID: {u.uid}\n  Người nói: {spk}\n  Gốc: {u.source}\n  Dịch: {tgt}")
+            lines.append(
+                f"- ID: {u.uid}\n"
+                f"  Người nói: {spk}\n"
+                f"  Gốc: \"\"\"{u.source}\"\"\"\n"
+                f"  Dịch: \"\"\"{tgt}\"\"\""
+            )
 
         sections.append("\n".join(lines))
         return "\n\n".join(sections)
@@ -271,6 +280,7 @@ class HallucinationGuard:
                 user_prompt=user_prompt,
                 json_schema=HALLUCINATION_GUARD_JSON_SCHEMA,
                 temperature=0.1,
+                retries=1,
             )
             return self.parse_guard_response(resp_dict, units=units)
         except Exception as err:

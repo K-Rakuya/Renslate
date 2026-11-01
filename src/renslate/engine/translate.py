@@ -1090,42 +1090,55 @@ class TranslationPipeline:
         if self.guard is not None and unit_updates:
             from dataclasses import replace
 
-            candidate_units = [replace(u, target=tgt) for u, tgt, _, _ in unit_updates]
-            guard_results = self.guard.scan_batch(candidate_units, context_window=user_prompt)
-            persist_hallucination_audit(self.db, guard_results)
+            # Only audit actual dialogue units; non-dialogue strings (UI buttons, technical placeholders)
+            # are validated by mask/unmask and QA and must not be passed to hallucination guard.
+            candidate_units = [
+                replace(u, target=tgt)
+                for u, tgt, _, _ in unit_updates
+                if u.kind == UnitKind.DIALOGUE
+                and any(c.isalnum() for c in u.source)
+                and not (
+                    u.source.strip().startswith("[")
+                    and u.source.strip().endswith("]")
+                    and ":" in u.source
+                )
+            ]
+            if candidate_units:
+                guard_results = self.guard.scan_batch(candidate_units, context_window=user_prompt)
+                persist_hallucination_audit(self.db, guard_results)
 
-            hal_by_id = {r.unit_id: r for r in guard_results if r.has_hallucination}
-            if hal_by_id:
-                filtered_updates: list[tuple[Unit, str, tuple[str, ...], Status]] = []
-                for u, tgt, flags, status in unit_updates:
-                    r = hal_by_id.get(u.uid)
-                    if r is not None and r.confidence >= 0.70:
-                        _LOG.info(
-                            "Dòng %s bị HallucinationGuard gắn cờ %s (độ tin cậy %.2f): %s",
-                            u.uid,
-                            r.category,
-                            r.confidence,
-                            r.explanation,
-                        )
-                        detail = r.explanation
-                        if r.suggested_correction:
-                            detail = f"{detail} (Gợi ý: {r.suggested_correction})"
-                        failed_units.append(
-                            UnitFailure(
-                                u,
-                                r.category or "hallucination",
-                                detail,
-                                tgt,
+                hal_by_id = {r.unit_id: r for r in guard_results if r.has_hallucination}
+                if hal_by_id:
+                    filtered_updates: list[tuple[Unit, str, tuple[str, ...], Status]] = []
+                    for u, tgt, flags, status in unit_updates:
+                        r = hal_by_id.get(u.uid)
+                        if r is not None and r.confidence >= 0.70:
+                            _LOG.info(
+                                "Dòng %s bị HallucinationGuard gắn cờ %s (độ tin cậy %.2f): %s",
+                                u.uid,
+                                r.category,
+                                r.confidence,
+                                r.explanation,
                             )
-                        )
-                    else:
-                        if r is not None:
-                            flags = tuple(
-                                sorted(set(flags) | {f"qa_hallucination_{r.category.lower()}"})
+                            detail = r.explanation
+                            if r.suggested_correction:
+                                detail = f"{detail} (Gợi ý: {r.suggested_correction})"
+                            failed_units.append(
+                                UnitFailure(
+                                    u,
+                                    r.category or "hallucination",
+                                    detail,
+                                    tgt,
+                                )
                             )
-                            status = Status.QA_FLAGGED
-                        filtered_updates.append((u, tgt, flags, status))
-                unit_updates = filtered_updates
+                        else:
+                            if r is not None:
+                                flags = tuple(
+                                    sorted(set(flags) | {f"qa_hallucination_{r.category.lower()}"})
+                                )
+                                status = Status.QA_FLAGGED
+                            filtered_updates.append((u, tgt, flags, status))
+                    unit_updates = filtered_updates
 
         if unit_updates:
             with self.db.transaction():

@@ -260,3 +260,29 @@ def test_auto_repair_placeholders_single_pass_healing() -> None:
     assert repaired == expected
     # Ensure unrelated bracket was untouched
     assert "[unrelated_item]" in repaired
+
+
+def test_auto_repair_non_leading_tokens_and_raw_interpolations() -> None:
+    # 1. Subject moved away from index 0 in translation (must not duplicate leading token)
+    s1 = "{color=75AEC2}Keiko's{/color} World"
+    m1 = mask(s1)
+    repaired1 = auto_repair_placeholders(m1, "Thế giới của ⟦T1⟧Keiko⟦/T1⟧")
+    assert repaired1 == "Thế giới của ⟦T1⟧Keiko⟦/T1⟧"
+    assert unmask(m1, repaired1) == "Thế giới của {color=75AEC2}Keiko{/color}"
+
+    # 2. Raw variable name preserved by model instead of placeholder
+    s2 = "[u.version] is available. Do you want to install it?"
+    m2 = mask(s2)
+    repaired2 = auto_repair_placeholders(
+        m2, "Phiên bản [u.version] đã có sẵn. Bạn có muốn cài đặt không?"
+    )
+    assert "⟦V1⟧" in repaired2
+    assert unmask(m2, repaired2) == "Phiên bản [u.version] đã có sẵn. Bạn có muốn cài đặt không?"
+
+    # 3. Hallucinated closer for unclosed standalone tag (e.g. {size=-3})
+    s3 = "{size=-3}Sakura Town"
+    m3 = mask(s3)
+    repaired3 = auto_repair_placeholders(m3, "⟦T1⟧Thị trấn Sakura⟦/T1⟧")
+    assert "⟦/T1⟧" not in repaired3
+    assert unmask(m3, repaired3) == "{size=-3}Thị trấn Sakura"
+

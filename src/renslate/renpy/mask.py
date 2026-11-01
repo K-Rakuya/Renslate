@@ -342,35 +342,39 @@ def auto_repair_placeholders(masked: MaskedText, translated: str) -> str:
                     result = result + nl_mark
 
     for token in masked.tokens:
+        mark = f"{OPEN_MARK}{token.key}{CLOSE_MARK}"
+        # If a variable interpolation was output in raw form (e.g. [u.version]) instead of placeholder:
+        if token.kind == TokenKind.VARIABLE and mark not in result and token.raw and token.raw in result:
+            result = result.replace(token.raw, mark, 1)
+
         if token.close_raw is not None:
             open_mark = f"{OPEN_MARK}{token.key}{CLOSE_MARK}"
             close_mark = f"{OPEN_MARK}/{token.key}{CLOSE_MARK}"
             if open_mark in result and close_mark not in result:
                 result = result + close_mark
+        else:
+            # Strip hallucinated closing tag for unclosed or standalone tags
+            hallucinated_close = f"{OPEN_MARK}/{token.key}{CLOSE_MARK}"
+            if hallucinated_close in result:
+                result = result.replace(hallucinated_close, "")
 
     has_raw_curly = ("{" in result or "}" in result) and (OPEN_MARK not in result)
     if not has_raw_curly:
-        # Restore leading standalone/opening token sequence if partially or fully dropped
+        # Restore leading standalone/opening token sequence if completely missing from result
         m_lead = _LEADING_TOKEN_CLUSTER_RE.match(masked.text.lstrip())
         if m_lead:
             leading_tokens = _TOKEN_CLUSTER_RE.findall(m_lead.group(0))
-            m_cur_lead = _LEADING_TOKEN_CLUSTER_RE.match(result.lstrip())
-            cur_lead_str = m_cur_lead.group(0) if m_cur_lead else ""
-            cur_lead_tokens = _TOKEN_CLUSTER_RE.findall(cur_lead_str)
-            if any(tok not in cur_lead_tokens for tok in leading_tokens):
-                result = result[len(cur_lead_str) :]
-                result = "".join(leading_tokens) + result
+            missing_leading = [tok for tok in leading_tokens if tok not in result]
+            if missing_leading:
+                result = "".join(missing_leading) + result
 
-        # Restore trailing standalone/closing token sequence if partially or fully dropped
+        # Restore trailing standalone/closing token sequence if completely missing from result
         m_trail = _TRAILING_TOKEN_CLUSTER_RE.search(masked.text.rstrip())
         if m_trail:
             trailing_tokens = _TOKEN_CLUSTER_RE.findall(m_trail.group(0))
-            m_cur_trail = _TRAILING_TOKEN_CLUSTER_RE.search(result.rstrip())
-            cur_trail_str = m_cur_trail.group(0) if m_cur_trail else ""
-            cur_trail_tokens = _TOKEN_CLUSTER_RE.findall(cur_trail_str)
-            if any(tok not in cur_trail_tokens for tok in trailing_tokens):
-                result = result[: len(result) - len(cur_trail_str)]
-                result = result + "".join(trailing_tokens)
+            missing_trailing = [tok for tok in trailing_tokens if tok not in result]
+            if missing_trailing:
+                result = result + "".join(missing_trailing)
 
         # Restore any remaining standalone tokens dropped in body
         for token in masked.tokens:

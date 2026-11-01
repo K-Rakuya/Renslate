@@ -479,6 +479,7 @@ class LLMClient:
         json_schema: dict[str, Any] | None = None,
         grammar: str | None = None,
         fallback_single_key: str | None = None,
+        retries: int | None = None,
     ) -> tuple[dict[str, Any], int, int]:
         """Send chat completion request expecting a JSON object output.
 
@@ -532,16 +533,16 @@ class LLMClient:
             "Content-Length": str(len(data)),
         }
 
-        retries = self.config.max_retries
+        eff_retries = retries if retries is not None else self.config.max_retries
         last_error: Exception | None = None
 
-        for attempt in range(retries + 1):
+        for attempt in range(eff_retries + 1):
             if attempt > 0:
                 delay = (2 ** (attempt - 1)) + random.uniform(0.1, 1.0)
                 _LOG.warning(
                     "Thử lại lần %d/%d sau %.1f giây do lỗi trước đó: %s",
                     attempt,
-                    retries,
+                    eff_retries,
                     delay,
                     last_error,
                 )
@@ -690,7 +691,7 @@ class LLMClient:
                         )
                 last_error = extract_err
 
-        raise LLMError(f"Thất bại khi gọi LLM server sau {retries + 1} lần thử: {last_error}")
+        raise LLMError(f"Thất bại khi gọi LLM server sau {eff_retries + 1} lần thử: {last_error}")
 
 
 __all__ = [
