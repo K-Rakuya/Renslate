@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from renslate.core.models import CharacterProfile, Unit
+from renslate.domain.policies.attention import DiscourseAttentionPolicy
 
 if TYPE_CHECKING:
     from renslate.engine.graph import RelationshipGraph
@@ -227,9 +228,22 @@ class InterlocutorResolver:
         unit: Unit,
         active_speakers: set[str] | Sequence[str] | None,
         allowed_targets: set[str] | None = None,
+        prev_unit: Unit | None = None,
     ) -> tuple[str | None, str]:
         """Last-resort listener guess: recent other speaker, else the only other participant."""
         spk_lower = spk.lower()
+
+        # Question-answer adjacency turn: if previous turn was an unanswered question by someone else
+        if (
+            prev_unit
+            and prev_unit.speaker
+            and prev_unit.speaker.lower() != spk_lower
+            and prev_unit.source.strip().endswith("?")
+            and (not allowed_targets or prev_unit.speaker.lower() in allowed_targets)
+            and 0 <= unit.seq - prev_unit.seq <= 4
+        ):
+            return prev_unit.speaker, "question_adjacency"
+
         if self._history_window > 0:
             for other, seq in reversed(self._recent_turns):
                 if other.lower() == spk_lower:
@@ -338,6 +352,8 @@ class InterlocutorResolver:
             sentences = [clean]
 
         def _lookup(cand: str) -> str | None:
+            if DiscourseAttentionPolicy.is_third_person_reference(clean, cand):
+                return None
             tag = None
             if speaker_norm and (speaker_norm, cand) in self._speaker_aliases:
                 tag = self._speaker_aliases[(speaker_norm, cand)]
@@ -345,6 +361,8 @@ class InterlocutorResolver:
                 tag = name_map.get(cand) or self._aliases.get(cand)
             if tag and tag.lower() != speaker_norm:
                 if allowed_targets and tag.lower() not in allowed_targets:
+                    return None
+                if DiscourseAttentionPolicy.is_third_person_reference(clean, tag):
                     return None
                 return tag
             return None
@@ -506,13 +524,22 @@ class InterlocutorResolver:
 
         name_map = self._build_name_map(active_speakers, known_names)
 
-        # Collect allowed active presence targets (if scene presence is explicitly specified)
+        # Collect allowed active presence targets (if scene presence or stage is explicitly specified)
         allowed_targets: set[str] | None = None
         if present_characters:
             allowed_targets = {
                 p.strip().lower() for p in present_characters if p and p.strip()
             }
             allowed_targets.difference_update(_NON_DIALOGUE_TAGS)
+
+        if hasattr(unit, "stage") and unit.stage is not None:
+            stage_tags = getattr(unit.stage, "active_tags", None)
+            if stage_tags:
+                if allowed_targets is not None:
+                    allowed_targets = allowed_targets.intersection(stage_tags)
+                else:
+                    allowed_targets = set(stage_tags)
+                allowed_targets.difference_update(_NON_DIALOGUE_TAGS)
 
         # 2. Vocative Detection on clean dialogue
         vocative_target, _ = self._extract_vocative(
@@ -621,7 +648,7 @@ class InterlocutorResolver:
 
         # 5. Fallbacks: narration between turns, same-speaker runs, two-person scenes
         fb_listener, fb_method = self._fallback_listener(
-            spk, unit, active_speakers, allowed_targets=allowed_targets
+            spk, unit, active_speakers, allowed_targets=allowed_targets, prev_unit=effective_prev
         )
         self._prev_unit = unit
         self._prev_speaker = spk

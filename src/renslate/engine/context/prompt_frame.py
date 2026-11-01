@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from renslate.core.models import CharacterProfile, Unit
+from renslate.domain.policies.mob_roles import MobRoleClassifier
 from renslate.engine.context.resolver import (
     _NON_DIALOGUE_TAGS,
     _PROTAGONIST_TAGS,
@@ -161,6 +162,16 @@ def format_rich_dialogue_line(
                     rel_part = f" | Quan hệ: {spk_name} xưng '{parts[0]}', gọi '{parts[1]}'"
                 else:
                     rel_part = f" | Quan hệ: {rule_clean}"
+        elif not rel_part and (
+            (cp_spk is None and MobRoleClassifier.classify(spk_clean))
+            or (cp_lis is None and MobRoleClassifier.classify(lis_clean))
+            or (cp_spk and cp_spk.role in ("service", "authority"))
+            or (cp_lis and cp_lis.role in ("service", "authority"))
+        ):
+            mob_pair = MobRoleClassifier.infer_pronoun_pair(spk_clean, lis_clean)
+            if mob_pair:
+                spk_pro, lis_pro = mob_pair
+                rel_part = f" | Vai trò xã hội: {spk_name} xưng '{spk_pro}', gọi '{lis_pro}'"
 
         emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
         return (
