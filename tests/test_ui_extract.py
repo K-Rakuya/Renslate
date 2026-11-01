@@ -139,3 +139,85 @@ translate vietnamese start_12345678:
         # Verify translation in file
         updated_content = ui_strings_file.read_text(encoding="utf-8")
         assert 'new "QUAY LẠI"' in updated_content
+
+
+def test_render_raw_script_ui_line_fallback() -> None:
+    from renslate.renpy.writer import _render
+
+    # 1. Screen text literal
+    line1 = '    text "Music Room"'
+    rendered1 = _render(UnitKind.UI, line1, "Phòng nghe nhạc")
+    assert rendered1 == '    text "Phòng nghe nhạc"'
+
+    # 2. Textbutton
+    line2 = '    textbutton "Play" action NullAction()'
+    rendered2 = _render(UnitKind.UI, line2, "Phát nhạc")
+    assert rendered2 == '    textbutton "Phát nhạc" action NullAction()'
+
+    # 3. Already matching returns None
+    assert _render(UnitKind.UI, '    text "Phòng nghe nhạc"', "Phòng nghe nhạc") is None
+
+
+def test_deduplicate_tl_strings(tmp_path: Path) -> None:
+    from renslate.renpy.extract import deduplicate_tl_strings
+
+    tl_dir = tmp_path / "game" / "tl" / "vietnamese"
+    tl_dir.mkdir(parents=True)
+
+    # File 1 has "Start", "Quit" and an accidental duplicated "Start"
+    (tl_dir / "screens.rpy").write_text(
+        """\\
+translate vietnamese strings:
+
+    # game/screens.rpy:10
+    old "Start"
+    new "Bắt đầu"
+
+    # game/screens.rpy:20
+    old "Quit"
+    new "Thoát"
+
+    # game/screens.rpy:30
+    old "Start"
+    new "Bắt đầu"
+""",
+        encoding="utf-8",
+    )
+
+    # File 2 (custom_menu.rpy) has "Start" (duplicate across files) and "Edit"
+    (tl_dir / "custom_menu.rpy").write_text(
+        """\\
+translate vietnamese strings:
+
+    # game/custom_menu.rpy:5
+    old "Start"
+    new "Bắt đầu"
+
+    # game/custom_menu.rpy:15
+    old "Edit"
+    new "Chỉnh sửa"
+
+translate vietnamese strings:
+
+    # game/custom_menu.rpy:25
+    old "Edit"
+    new "Chỉnh sửa"
+""",
+        encoding="utf-8",
+    )
+
+    removed = deduplicate_tl_strings(tl_dir, "vietnamese")
+    assert removed == 3
+
+    # Check screens.rpy: only 1 "Start", 1 "Quit"
+    screens_content = (tl_dir / "screens.rpy").read_text(encoding="utf-8")
+    assert screens_content.count('old "Start"') == 1
+    assert screens_content.count('old "Quit"') == 1
+
+    # Check custom_menu.rpy: "Start" removed (already in screens.rpy), duplicate "Edit" removed
+    action_content = (tl_dir / "custom_menu.rpy").read_text(encoding="utf-8")
+    assert action_content.count('old "Start"') == 0
+    assert action_content.count('old "Edit"') == 1
+    # Empty second translate block was purged
+    assert action_content.count("translate vietnamese strings:") == 1
+

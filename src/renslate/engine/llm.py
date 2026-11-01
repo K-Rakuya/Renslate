@@ -120,7 +120,7 @@ def _extract_fragmented_pairs(text: str) -> dict[str, str]:
             if closed:
                 raw_val = "".join(val_chars)
                 try:
-                    val = json.loads(f'"{raw_val}"')
+                    val = json.loads(f'"{raw_val}"', strict=False)
                 except json.JSONDecodeError:
                     val = raw_val.replace('\\"', '"').replace("\\\\", "\\").replace("\\n", "\n")
                 results[k] = val
@@ -164,7 +164,7 @@ def extract_json_object(
 
     # Tier 1: Fast path
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(text, strict=False)
         res = _merge_parsed_json(parsed)
         if res is not None:
             return res
@@ -174,7 +174,7 @@ def extract_json_object(
     # Tier 2: Quote normalization
     normalized = _normalize_json_text(text)
     try:
-        parsed = json.loads(normalized)
+        parsed = json.loads(normalized, strict=False)
         res = _merge_parsed_json(parsed)
         if res is not None:
             return res
@@ -191,14 +191,14 @@ def extract_json_object(
         if last_bracket > first_bracket:
             candidate_arr = normalized[first_bracket : last_bracket + 1]
             try:
-                parsed = json.loads(candidate_arr)
+                parsed = json.loads(candidate_arr, strict=False)
                 res = _merge_parsed_json(parsed)
                 if res is not None:
                     return res
             except json.JSONDecodeError:
                 sanitized_arr = re.sub(r",\s*([\}\]])", r"\1", candidate_arr)
                 try:
-                    parsed = json.loads(sanitized_arr)
+                    parsed = json.loads(sanitized_arr, strict=False)
                     res = _merge_parsed_json(parsed)
                     if res is not None:
                         return res
@@ -211,7 +211,7 @@ def extract_json_object(
             candidate_repair = normalized[first_bracket : last_quote + 1] + "\n}]"
             candidate_repair = re.sub(r",\s*\}\]$", "}]", candidate_repair)
             try:
-                parsed = json.loads(candidate_repair)
+                parsed = json.loads(candidate_repair, strict=False)
                 res = _merge_parsed_json(parsed)
                 if res is not None:
                     return res
@@ -225,7 +225,7 @@ def extract_json_object(
         if last_brace > first_brace:
             candidate = normalized[first_brace : last_brace + 1]
             try:
-                parsed = json.loads(candidate)
+                parsed = json.loads(candidate, strict=False)
                 res = _merge_parsed_json(parsed)
                 if res is not None:
                     return res
@@ -237,7 +237,7 @@ def extract_json_object(
                     sanitized,
                 )
                 try:
-                    parsed = json.loads(sanitized)
+                    parsed = json.loads(sanitized, strict=False)
                     res = _merge_parsed_json(parsed)
                     if res is not None:
                         return res
@@ -250,7 +250,7 @@ def extract_json_object(
             candidate_repair = normalized[first_brace : last_quote + 1] + "\n}"
             candidate_repair = re.sub(r",\s*\}$", "}", candidate_repair)
             try:
-                parsed = json.loads(candidate_repair)
+                parsed = json.loads(candidate_repair, strict=False)
                 res = _merge_parsed_json(parsed)
                 if res is not None:
                     return res
@@ -266,7 +266,7 @@ def extract_json_object(
         )
         bracketless_candidate = "{\n" + bracketless.strip().rstrip(",") + "\n}"
         try:
-            parsed = json.loads(bracketless_candidate)
+            parsed = json.loads(bracketless_candidate, strict=False)
             res = _merge_parsed_json(parsed)
             if res is not None:
                 return res

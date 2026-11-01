@@ -23,6 +23,7 @@ from renslate.renpy.parser import (
     TranslationScanner,
     fingerprint,
     parse_say,
+    parse_string_line,
     string_uid,
 )
 
@@ -96,6 +97,115 @@ def _has_human_text(s: str) -> bool:
     return bool(_ALPHABETIC_RE.search(cleaned))
 
 
+def _tl_file_priority(path: Path) -> tuple[int, str]:
+    name = path.name.lower()
+    parts = [p.lower() for p in path.parts]
+    if "common.rpy" in name:
+        return (0, str(path))
+    if "screens.rpy" in name:
+        return (1, str(path))
+    if "options.rpy" in name:
+        return (2, str(path))
+    if "ui_strings.rpy" in name:
+        return (10, str(path))
+    if any(p in ("animeditor", "editor", "tools") for p in parts):
+        return (20, str(path))
+    return (5, str(path))
+
+
+def deduplicate_tl_strings(tl_root: Path, target_lang: str) -> int:
+    """Find and purge duplicate string translations across all tl/<lang>/*.rpy files.
+
+    Ren'Py raises a fatal unhandled exception at startup if the exact same `old` string
+    appears multiple times across the language's string translation blocks.
+    """
+    if not tl_root.is_dir():
+        return 0
+
+    header_re = re.compile(rf"^translate\s+{re.escape(target_lang)}\s+strings\s*:")
+    seen_old: dict[str, tuple[str, str]] = {}  # old_text -> (file_name, new_text)
+    files = sorted(tl_root.rglob("*.rpy"), key=_tl_file_priority)
+    total_removed = 0
+
+    for rpy in files:
+        try:
+            lines = read_text_file(rpy).lines
+        except Exception:
+            continue
+
+        new_lines: list[str] = []
+        i = 0
+        file_changed = False
+        in_strings = False
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if header_re.match(stripped):
+                in_strings = True
+                new_lines.append(line)
+                i += 1
+                continue
+            elif stripped.startswith("translate ") and not header_re.match(stripped):
+                in_strings = False
+                new_lines.append(line)
+                i += 1
+                continue
+
+            if in_strings:
+                old_parsed = parse_string_line(line, "old")
+                if old_parsed is not None:
+                    _, old_val = old_parsed
+                    j = i + 1
+                    while j < len(lines) and not lines[j].strip():
+                        j += 1
+                    new_line = lines[j] if j < len(lines) else ""
+                    new_parsed = parse_string_line(new_line, "new")
+                    new_val = new_parsed[1] if new_parsed is not None else ""
+
+                    if old_val in seen_old:
+                        file_changed = True
+                        total_removed += 1
+                        while new_lines and new_lines[-1].strip().startswith("#"):
+                            new_lines.pop()
+                        i = j + 1
+                        continue
+                    else:
+                        seen_old[old_val] = (rpy.name, new_val)
+                        new_lines.append(line)
+                        i += 1
+                        continue
+
+            new_lines.append(line)
+            i += 1
+
+        if file_changed:
+            cleaned_lines: list[str] = []
+            k = 0
+            while k < len(new_lines):
+                if header_re.match(new_lines[k].strip()):
+                    m = k + 1
+                    has_content = False
+                    while m < len(new_lines):
+                        st = new_lines[m].strip()
+                        if st.startswith("translate "):
+                            break
+                        if st and not st.startswith("#"):
+                            has_content = True
+                            break
+                        m += 1
+                    if not has_content:
+                        k = m
+                        continue
+                cleaned_lines.append(new_lines[k])
+                k += 1
+
+            write_atomic(rpy, ("\n".join(cleaned_lines) + "\n").encode("utf-8"))
+
+    return total_removed
+
+
 def sync_project_ui_strings(project: Project, scanner: TranslationScanner) -> int:
     """Scan game scripts and screens for UI text missing in translation files, syncing them."""
     game_root = project.root / "game"
@@ -153,11 +263,24 @@ def sync_project_ui_strings(project: Project, scanner: TranslationScanner) -> in
     rel_ui_file = project.relative(ui_file_path)
 
     existing_lines: list[str] = []
+    existing_old: set[str] = set()
     if ui_file_path.is_file():
         try:
             existing_lines = read_text_file(ui_file_path).lines
+            for el in existing_lines:
+                old_p = parse_string_line(el, "old")
+                if old_p is not None:
+                    existing_old.add(old_p[1])
         except Exception:
             existing_lines = []
+
+    filtered_entries = [
+        (val, ref)
+        for val, ref in new_entries
+        if val not in existing_old and val not in known_sources
+    ]
+    if not filtered_entries:
+        return 0
 
     chunks: list[str] = []
     if not existing_lines:
@@ -165,9 +288,10 @@ def sync_project_ui_strings(project: Project, scanner: TranslationScanner) -> in
     else:
         chunks.append("\n".join(existing_lines).rstrip() + "\n")
 
-    for val, ref in new_entries:
+    for val, ref in filtered_entries:
         quoted = quote_python_text(val)
         chunks.append(f'\n    # {ref}\n    old "{quoted}"\n    new "{quoted}"\n')
+        known_sources.add(val)
 
     write_atomic(ui_file_path, "".join(chunks).encode("utf-8"))
 
@@ -175,7 +299,105 @@ def sync_project_ui_strings(project: Project, scanner: TranslationScanner) -> in
     updated_file = read_text_file(ui_file_path)
     scanner.scan_file(rel_ui_file, updated_file.lines)
 
-    return len(new_entries)
+    return len(filtered_entries)
+
+
+def sync_sibling_tl_strings(project: Project, scanner: TranslationScanner) -> int:
+    """Extract missing UI, menu, and quest strings from sibling translation bytecode packs."""
+    game_root = project.root / "game"
+    tl_dir = game_root / "tl" if (game_root / "tl").is_dir() else project.root / "tl"
+    if not tl_dir.is_dir() or not project.tl_root.is_dir():
+        return 0
+
+    known_sources = {u.source for u in scanner.units}
+    target_lang = project.config.target_lang
+    from renslate.renpy.rpyc import RpycFile, SLOT_STATEMENTS_POST, _unpack_stmts
+
+    by_file: dict[str, list[tuple[str, int, str]]] = {}
+    seen: set[str] = set()
+
+    for lang_dir in sorted(tl_dir.iterdir()):
+        if not lang_dir.is_dir() or lang_dir.name == target_lang or lang_dir.name.lower() == "none":
+            continue
+        rpyc_files = sorted(lang_dir.rglob("*.rpyc"))
+        for rpyc_path in rpyc_files:
+            rel_path = rpyc_path.relative_to(lang_dir).with_suffix(".rpy")
+            try:
+                with RpycFile(rpyc_path) as rpyc:
+                    slot2 = rpyc.load_slot(SLOT_STATEMENTS_POST)
+                    if slot2 is None:
+                        continue
+                    stmts = _unpack_stmts(slot2)
+                    for stmt in stmts:
+                        if hasattr(stmt, "block") and stmt.block:
+                            for child in stmt.block:
+                                if type(child).__name__ == "TranslateString":
+                                    old_val = getattr(child, "old", "") or ""
+                                    if old_val and isinstance(old_val, str) and _has_human_text(old_val):
+                                        old_val = normalize_nfc(old_val)
+                                        if old_val not in known_sources and old_val not in seen:
+                                            seen.add(old_val)
+                                            fn = getattr(child, "filename", "") or str(rel_path)
+                                            ln = getattr(child, "linenumber", 0) or 0
+                                            by_file.setdefault(str(rel_path), []).append((fn, ln, old_val))
+            except Exception:
+                continue
+
+    if not by_file:
+        return 0
+
+    total_added = 0
+    updated_files: set[str] = set()
+
+    for rel_str, items in by_file.items():
+        target_path = project.tl_root / rel_str
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        rel_target = project.relative(target_path)
+
+        existing_lines: list[str] = []
+        existing_old: set[str] = set()
+        if target_path.is_file():
+            try:
+                existing_lines = read_text_file(target_path).lines
+                for el in existing_lines:
+                    old_p = parse_string_line(el, "old")
+                    if old_p is not None:
+                        existing_old.add(old_p[1])
+            except Exception:
+                existing_lines = []
+
+        filtered_items = [
+            (fn, ln, val)
+            for fn, ln, val in items
+            if val not in existing_old and val not in known_sources
+        ]
+        if not filtered_items:
+            continue
+
+        chunks: list[str] = []
+        if existing_lines:
+            chunks.append("\n".join(existing_lines).rstrip() + "\n\n")
+            chunks.append(f"translate {target_lang} strings:\n")
+        else:
+            chunks.append(f"translate {target_lang} strings:\n")
+
+        for fn, ln, val in filtered_items:
+            quoted = quote_python_text(val)
+            chunks.append(f'\n    # {fn}:{ln}\n    old "{quoted}"\n    new ""\n')
+            known_sources.add(val)
+            total_added += 1
+
+        write_atomic(target_path, "".join(chunks).encode("utf-8"))
+        updated_files.add(rel_target)
+
+    for rel_f in updated_files:
+        scanner.units = [u for u in scanner.units if u.file != rel_f]
+        full_p = project.root / rel_f
+        if full_p.is_file():
+            tf = read_text_file(full_p)
+            scanner.scan_file(rel_f, tf.lines)
+
+    return total_added
 
 
 def _scan_raw_script(
@@ -276,8 +498,10 @@ def scan_project(
         key=lambda path: project.relative(path),
     )
     if rpyc_files:
-        has_unextracted_rpyc = not (root.is_dir() and any(root.rglob("*.rpy")))
-        if not has_unextracted_rpyc:
+        has_unextracted_rpyc = False
+        if not root.is_dir() or not any(root.rglob("*.rpy")):
+            has_unextracted_rpyc = True
+        else:
             for rpyc_path in rpyc_files:
                 rel = rpyc_path.relative_to(search_dir)
                 if rel.parts and rel.parts[0] == "game":
@@ -293,6 +517,7 @@ def scan_project(
             synthesize_translation_skeletons(search_dir, project.config.target_lang)
 
     if root.is_dir() and any(root.rglob("*.rpy")):
+        # 1. Populate scanner with all existing files first
         scanner = TranslationScanner(project.config.target_lang)
         files = sorted(root.rglob("*.rpy"), key=lambda path: project.relative(path))
         for path in files:
@@ -304,8 +529,23 @@ def scan_project(
                 scanner.issues.append(Issue(Severity.ERROR, "bad_encoding", relative, 0, message))
                 continue
             scanner.scan_file(relative, text_file.lines)
-        sync_project_ui_strings(project, scanner)
-        files = sorted(root.rglob("*.rpy"), key=lambda path: project.relative(path))
+
+        # 2. Sync missing UI strings using the populated scanner
+        added_ui = sync_project_ui_strings(project, scanner)
+        added_sibling = sync_sibling_tl_strings(project, scanner)
+
+        if added_ui or added_sibling:
+            deduplicate_tl_strings(root, project.config.target_lang)
+            scanner = TranslationScanner(project.config.target_lang)
+            files = sorted(root.rglob("*.rpy"), key=lambda path: project.relative(path))
+            for path in files:
+                relative = project.relative(path)
+                try:
+                    text_file = read_text_file(path)
+                except UnicodeDecodeError:
+                    continue
+                scanner.scan_file(relative, text_file.lines)
+
         return scanner, len(files)
 
     # Fallback: scan game/*.rpy scripts directly if tl_root does not exist

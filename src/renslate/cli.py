@@ -111,8 +111,15 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
     from renslate.core.models import GlossaryEntry
     from renslate.engine.analyze import bootstrap_characters_with_llm
-    from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
+    from renslate.engine.glossary import (
+        Glossary,
+        clean_glossary,
+        collect_term_examples,
+        translate_glossary_with_llm,
+    )
     from renslate.engine.llm import LLMClient
+    from renslate.engine.relationships import bootstrap_relationships_with_llm
+    from renslate.engine.scenes import summarize_scenes_with_llm
 
     llm = LLMClient(project.config.llm)
     print(f"Bắt đầu LLM bootstrapping cho dự án tại {project.root}...")
@@ -121,6 +128,29 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
         print(f"  Đang phân tích hồ sơ nhân vật (tối đa {args.top_chars} nhân vật)...")
         chars = bootstrap_characters_with_llm(project, database, llm, max_chars=args.top_chars)
         print(f"  -> Hoàn tất hồ sơ cho {len(chars)} nhân vật.")
+
+        # 1b. Relationships and address forms from real exchanges
+        if args.top_pairs > 0:
+            print(f"  Đang xác định quan hệ và cách xưng hô (tối đa {args.top_pairs} cặp)...")
+            rel_stats = bootstrap_relationships_with_llm(
+                project,
+                database,
+                llm,
+                max_pairs=args.top_pairs,
+                force=args.refresh_relationships,
+            )
+            print(
+                f"  -> {rel_stats['resolved']}/{rel_stats['pairs']} cặp hợp lệ, "
+                f"{rel_stats['edges']} quan hệ được ghi."
+            )
+
+        # 1c. Scene summaries (location/mood/what is happening) for translation context
+        if args.top_scenes > 0:
+            print(f"  Đang tóm tắt phân cảnh (tối đa {args.top_scenes} cảnh)...")
+            sc_stats = summarize_scenes_with_llm(
+                project, database, llm, max_scenes=args.top_scenes, force=args.refresh_scenes
+            )
+            print(f"  -> Đã tóm tắt {sc_stats['summarized']}/{sc_stats['scenes']} cảnh.")
 
         # 2. Glossary
         glossary_file = project.work_dir / "glossary.json"
@@ -144,7 +174,9 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             to_trans = untranslated[: args.top_terms]
             total_untrans = len(untranslated)
             print(f"  Đang dịch thuật ngữ bằng LLM ({len(to_trans)}/{total_untrans} ứng viên)...")
-            enriched = translate_glossary_with_llm(to_trans, llm)
+            enriched = translate_glossary_with_llm(
+                to_trans, llm, examples=collect_term_examples(to_trans, database.all_units())
+            )
             trans_map = {e.term: e for e in enriched if e.translation.strip()}
             final_entries = [trans_map.get(e.term, e) for e in cleaned_entries]
             g_final = Glossary(final_entries)
@@ -281,13 +313,47 @@ def _print_apply(report: ApplyReport) -> None:
 
 def _cmd_apply(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
-    if getattr(args, "setup_font", False):
-        font_path = setup_vietnamese_support(project)
+    if getattr(args, "setup_font", False) or getattr(args, "sans_font", None) or getattr(args, "serif_font", None):
+        font_path = setup_vietnamese_support(
+            project,
+            font_file=getattr(args, "sans_font", None),
+            serif_font=getattr(args, "serif_font", None),
+        )
         print(f"Đã tạo cấu hình phông tiếng Việt: {project.relative(font_path)}")
 
     with project.open_db() as database:
         report = apply_translations(project, database, dry_run=args.dry_run)
     _print_apply(report)
+    return 0
+
+
+def _cmd_font(args: argparse.Namespace) -> int:
+    project = Project.open(_root(args))
+    from renslate.renpy.fonts import discover_game_fonts, setup_vietnamese_support
+
+    detected = discover_game_fonts(project)
+    print(f"Quét phông chữ cho dự án: {project.root}")
+    if detected:
+        print(f"Đã phát hiện {len(detected)} phông chữ trong game:")
+        for f in detected:
+            if f.supports_vi:
+                status = "✓ Hỗ trợ đầy đủ tiếng Việt"
+            else:
+                status = f"✗ Thiếu {f.missing_count} ký tự dấu tiếng Việt"
+            print(f"  - [{f.style.upper():<7}] {f.rel_path} -> {status}")
+    else:
+        print("  Không tìm thấy tệp phông chữ tùy biến trong game/ (dùng phông mặc định của Ren'Py).")
+
+    if not getattr(args, "inspect", False):
+        font_path = setup_vietnamese_support(
+            project,
+            font_file=getattr(args, "sans_font", None),
+            serif_font=getattr(args, "serif_font", None),
+            auto_replace_game_fonts=not getattr(args, "no_replace", False),
+        )
+        print(f"\nĐã tạo cấu hình phông tiếng Việt tự động tại: {project.relative(font_path)}")
+        print("  - Giao diện GUI: Tự động dùng Be Vietnam Pro / Nunito / DejaVuSans")
+        print("  - Thẻ {font=...}: Tự động thay thế qua config.font_replacement_map")
     return 0
 
 
@@ -336,7 +402,9 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
     limit = args.limit or 10
     with project.open_db() as database:
-        order = "DESC" if getattr(args, "latest", False) else "ASC"
+        is_latest = getattr(args, "latest", False)
+        order_col = "updated_at" if is_latest else "seq"
+        order = "DESC" if is_latest else "ASC"
         where_clauses = ["target IS NOT NULL", "target != ''"]
         params: list[Any] = []
         if getattr(args, "status", None):
@@ -346,7 +414,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         where_sql = " AND ".join(where_clauses)
         query = (
             f"SELECT uid, speaker, source, target, origin, status FROM units "
-            f"WHERE {where_sql} ORDER BY seq {order} LIMIT ?"
+            f"WHERE {where_sql} ORDER BY {order_col} {order} LIMIT ?"
         )
         params.append(limit)
         rows = database.execute(query, params).fetchall()
@@ -372,12 +440,18 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
 def _cmd_clean_db(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
+    from renslate.renpy.extract import deduplicate_tl_strings
+
+    dups_removed = deduplicate_tl_strings(project.tl_root, project.config.target_lang)
     with project.open_db() as database:
         units_cleaned, tm_cleaned = database.sanitize_stored_translations()
-        print(
+        msg = (
             f"Đã làm sạch {units_cleaned} dòng thoại trong units "
             f"và {tm_cleaned} mục trong translation memory (TM)."
         )
+        if dups_removed:
+            msg += f" Đã loại bỏ {dups_removed} chuỗi trùng lặp trong tệp dịch."
+        print(msg)
     return 0
 
 
@@ -549,6 +623,27 @@ def _build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument(
         "--top-terms", type=int, default=100, help="số thuật ngữ cần dịch bằng LLM (mặc định: 100)"
     )
+    bootstrap.add_argument(
+        "--top-pairs",
+        type=int,
+        default=30,
+        help="số cặp nhân vật cần xác định quan hệ/xưng hô bằng LLM (0 để bỏ qua; mặc định: 30)",
+    )
+    bootstrap.add_argument(
+        "--refresh-relationships",
+        action="store_true",
+        help="làm lại cả những cặp đã được LLM xác định trước đó",
+    )
+
+    bootstrap.add_argument(
+        "--top-scenes",
+        type=int,
+        default=80,
+        help="số phân cảnh cần tóm tắt bằng LLM làm ngữ cảnh (0 để bỏ qua; mặc định: 80)",
+    )
+    bootstrap.add_argument(
+        "--refresh-scenes", action="store_true", help="tóm tắt lại cả những cảnh đã có tóm tắt"
+    )
 
     translate = add("translate", _cmd_translate, "dịch các dòng thoại bằng model local")
     translate.add_argument("--limit", type=int, help="giới hạn số dòng cần dịch")
@@ -574,6 +669,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--setup-font",
         action="store_true",
         help="tạo tệp cấu hình phông chữ tiếng Việt renslate_setup.rpy",
+    )
+    apply.add_argument("--sans-font", help="đường dẫn phông Sans-serif tùy chỉnh")
+    apply.add_argument("--serif-font", help="đường dẫn phông Serif tùy chỉnh")
+
+    font_cmd = add("font", _cmd_font, "quét phông chữ và thiết lập hiển thị tiếng Việt cho Ren'Py")
+    font_cmd.add_argument(
+        "--inspect",
+        "--scan",
+        dest="inspect",
+        action="store_true",
+        help="chỉ kiểm tra phông chữ mà không ghi tệp cấu hình",
+    )
+    font_cmd.add_argument("--sans-font", help="đường dẫn phông Sans-serif tùy chỉnh")
+    font_cmd.add_argument("--serif-font", help="đường dẫn phông Serif tùy chỉnh")
+    font_cmd.add_argument(
+        "--no-replace",
+        action="store_true",
+        help="không tự động tạo font_replacement_map thay thế phông gốc",
     )
 
     status_cmd = add("status", _cmd_status, "thống kê tiến độ")

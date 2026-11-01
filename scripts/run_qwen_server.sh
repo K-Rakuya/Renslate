@@ -27,30 +27,42 @@ msg_err()   { printf "${CLR_RED}${CLR_BOLD}[ERR]${CLR_RESET}  %s\n" "$*" >&2; }
 # ------------------------------------------------------------------------------
 # 1. Configuration (Environment overrides supported)
 # ------------------------------------------------------------------------------
+# CUDA Kernel & PCIe DMA Low-Latency Optimization
+export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
+export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+export GGML_CUDA_GRAPH_OPT="${GGML_CUDA_GRAPH_OPT:-1}"
+export GGML_CUDA_REGISTER_HOST="${GGML_CUDA_REGISTER_HOST:-1}"
+unset GGML_CUDA_NO_PINNED # Đảm bảo bật Pinned Memory (nếu set bất kỳ giá trị nào kể cả 0 thì C++ getenv!=null sẽ tắt)
+
 DEFAULT_SERVER_BIN="/path/to/storage Llama/bin/b11838-native/bin/llama-server"
-DEFAULT_MODEL_PATH="/path/to/storage Llama/llama.cpp/build-linux/bin/Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
+DEFAULT_MODEL_PATH="/path/to/commercial_vn/"
 
 SERVER_BIN="${RENSLATE_SERVER_BIN:-$DEFAULT_SERVER_BIN}"
 MODEL_PATH="${RENSLATE_MODEL_PATH:-$DEFAULT_MODEL_PATH}"
 HOST="${RENSLATE_HOST:-127.0.0.1}"
 PORT="${RENSLATE_PORT:-8080}"
 
-CTX_SIZE="${RENSLATE_CTX:-6144}"
+CTX_SIZE="${RENSLATE_CTX:-8096}"
 SLOTS="${RENSLATE_SLOTS:-1}"
-THREADS="${RENSLATE_THREADS:-4}"                # 4 physical cores saturate dual-channel DDR5 without thermal throttling
+THREADS="${RENSLATE_THREADS:-8}"                # 4 physical cores saturate dual-channel DDR5 without thermal throttling
 THREADS_BATCH="${RENSLATE_THREADS_BATCH:-8}"    # 8 cores for compute-bound prompt prefill
-BATCH="${RENSLATE_BATCH:-1024}"
-UBATCH="${RENSLATE_UBATCH:-512}"
-VRAM_MARGIN_MIB="${RENSLATE_VRAM_MARGIN:-512}"  # Reserve headroom for KDE/Wayland compositor
-MAX_TOKENS="${RENSLATE_MAX_TOKENS:-3500}"
+BATCH="${RENSLATE_BATCH:-512}"
+UBATCH="${RENSLATE_UBATCH:-256}"
+VRAM_MARGIN_MIB="${RENSLATE_VRAM_MARGIN:-256}"  # Reserve headroom for KDE/Wayland compositor
+MAX_TOKENS="${RENSLATE_MAX_TOKENS:-4500}"
 PROMPT_CACHE_MIB="${RENSLATE_PROMPT_CACHE_MIB:-512}"
 CTX_CHECKPOINTS="${RENSLATE_CTX_CHECKPOINTS:-4}"
 TEMP="${RENSLATE_TEMP:-0.3}"
 DEVICE="${RENSLATE_DEVICE:-}"
 WEBUI="${RENSLATE_WEBUI:-0}"
 SLEEP_IDLE="${RENSLATE_SLEEP_IDLE:--1}"
-WAIT_SECS="${RENSLATE_WAIT_SECS:-240}"
+WAIT_SECS="${RENSLATE_WAIT_SECS:-500}"
 LOAD_MODE="${RENSLATE_LOAD_MODE:-mmap}"
+DISABLE_OUTPUT_OFFLOAD="${RENSLATE_DISABLE_OUTPUT_OFFLOAD:-0}"
+DISABLE_EMBD_OFFLOAD="${RENSLATE_DISABLE_EMBD_OFFLOAD:-0}"
+NGL="${RENSLATE_NGL:-}"
+CPU_MOE="${RENSLATE_CPU_MOE:-0}"
+MOE_CACHE="${RENSLATE_MOE_CACHE:-0}"
 
 # ------------------------------------------------------------------------------
 # 2. Pre-Flight Diagnostics
@@ -138,11 +150,47 @@ fi
 if [[ -n "$DEVICE" ]]; then
     DEV_ARGS=(-dev "$DEVICE")
     msg_ok "Compute device : ${DEVICE} (NVIDIA Dedicated)"
+    msg_ok "CUDA Opts      : LAZY loading | MAX_CONN=1 | Graphs Opt | Pinned DMA Host"
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Build Final Execution Command
+# 5. Build Final Execution Command & Tensor Overrides
 # ------------------------------------------------------------------------------
+OT_RULES=()
+if [[ "$DISABLE_OUTPUT_OFFLOAD" == "1" ]]; then
+    OT_RULES+=('^output\.weight$=CPU')
+fi
+if [[ "$DISABLE_EMBD_OFFLOAD" == "1" ]]; then
+    OT_RULES+=('^token_embd\.weight$=CPU')
+fi
+
+OFFLOAD_ARGS=()
+if (( ${#OT_RULES[@]} > 0 )); then
+    joined_ot=$(IFS=,; echo "${OT_RULES[*]}")
+    OFFLOAD_ARGS=(-fit off -ot "$joined_ot")
+    msg_ok "Tensor overrides : ${joined_ot}"
+
+    # An toàn chống tràn VRAM (Model 16GB trên card 8GB):
+    # Khi dùng -ot, -fit on bị tắt. Bắt buộc giữ MoE ở CPU để tránh nhét trọn 16GB vào 8GB VRAM gây OOM.
+    ngl_to_use="${NGL:-31}"
+    cpu_moe_to_use="${CPU_MOE:-1}"
+    moe_cache_to_use="${MOE_CACHE:-3000}"
+
+    OFFLOAD_ARGS+=(-ngl "$ngl_to_use")
+    msg_ok "Layer offload    : ${ngl_to_use} layers (-ngl ${ngl_to_use})"
+
+    if [[ "$cpu_moe_to_use" == "1" ]]; then
+        OFFLOAD_ARGS+=(-cmoe)
+        msg_ok "MoE weights      : CPU resident (-cmoe)"
+    fi
+    if (( moe_cache_to_use > 0 )); then
+        OFFLOAD_ARGS+=(--moe-cache-mib "$moe_cache_to_use")
+        msg_ok "MoE VRAM Cache   : ${moe_cache_to_use} MiB (-moe-cache-mib ${moe_cache_to_use})"
+    fi
+else
+    OFFLOAD_ARGS=(-fit on -fitt "$VRAM_MARGIN_MIB")
+fi
+
 CMD=(
     "$SERVER_BIN"
     -m "$MODEL_PATH"
@@ -151,7 +199,7 @@ CMD=(
     -b "$BATCH" -ub "$UBATCH"
     -fa on
     -ctk q8_0 -ctv q8_0
-    -fit on -fitt "$VRAM_MARGIN_MIB"
+    "${OFFLOAD_ARGS[@]}"
     -lm "$LOAD_MODE" -lzm off
     "${CPU_ARGS[@]}"
     --poll 0
@@ -224,8 +272,13 @@ if (( HEALTH_OK )); then
     printf "║ • Endpoint API   : http://%s:%-49s║\n" "${HOST}" "${PORT}/v1"
     printf "║ • Kiểm tra sức khỏe: http://%s:%-47s║\n" "${HOST}" "${PORT}/health"
     printf "║ • Model kích hoạt: %-58s║\n" "$(basename "$MODEL_PATH")"
-    printf "║ • Cơ chế Offload : Auto-fit (-fit on, VRAM margin %d MiB, KV: q8_0)     ║\n" "$VRAM_MARGIN_MIB"
+    if (( ${#OT_RULES[@]} > 0 )); then
+        printf "║ • Cơ chế Offload : Manual Override (-ot %-33s) ║\n" "${joined_ot}"
+    else
+        printf "║ • Cơ chế Offload : Auto-fit (-fit on, VRAM margin %d MiB, KV: q8_0)     ║\n" "$VRAM_MARGIN_MIB"
+    fi
     printf "║ • CPU & Nhiệt độ : %d nhân vật lý [%s] | --poll 0 (Không tốn CPU chờ)  ║\n" "$THREADS" "${picked_cpus_str:-auto}"
+    printf "║ • CUDA Engine    : LAZY modules | MAX_CONN=1 | Graphs Opt | Pinned DMA Host ║\n"
     printf "║ • Tuổi thọ SSD   : An toàn tuyệt đối (-lzm off, -lm mmap, 0 ghi đĩa)        ║\n"
     echo "╚══════════════════════════════════════════════════════════════════════════════╝"
     printf "${CLR_RESET}\n"

@@ -25,9 +25,16 @@ from renslate.engine.analyze import (
     run_analysis,
     segment_scenes,
 )
-from renslate.engine.glossary import Glossary, clean_glossary, translate_glossary_with_llm
+from renslate.engine.glossary import (
+    Glossary,
+    clean_glossary,
+    collect_term_examples,
+    translate_glossary_with_llm,
+)
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient
+from renslate.engine.relationships import bootstrap_relationships_with_llm
+from renslate.engine.scenes import summarize_scenes_with_llm
 from renslate.engine.translate import TranslationPipeline
 from renslate.renpy.extract import extract
 from renslate.renpy.sdk import find_launcher, generate_translations
@@ -260,13 +267,36 @@ def bootstrap_if_needed(
                 untranslated.sort(key=_freq, reverse=True)
                 to_trans = untranslated[:150]
                 _LOG.info("Đang dịch tự động %d thuật ngữ phổ biến nhất...", len(to_trans))
-                enriched = translate_glossary_with_llm(to_trans, llm_client)
+                enriched = translate_glossary_with_llm(
+                    to_trans, llm_client, examples=collect_term_examples(to_trans, db.all_units())
+                )
                 trans_map = {e.term: e for e in enriched if e.translation.strip()}
                 final_entries = [trans_map.get(e.term, e) for e in cur_glossary]
                 g_final = Glossary(final_entries)
                 g_final.save_file(glossary_file)
                 g_final.save_db(db)
             db.set_meta("glossary_bootstrapped", utc_timestamp())
+
+    # Judge relationships and Vietnamese address forms from real exchanges (resumable, cheap:
+    # one LLM call per few pairs). Skipped when bootstrapping is disabled or already done.
+    needs_rel_bootstrap = bool(chars) and (
+        force_bootstrap or (not skip_bootstrap and not db.get_meta("relationships_bootstrapped"))
+    )
+    if needs_rel_bootstrap and check_server_health(project.config.llm.base_url):
+        _LOG.info("Đang xác định quan hệ và cách xưng hô giữa các cặp nhân vật...")
+        bootstrap_relationships_with_llm(
+            project, db, LLMClient(project.config.llm), max_pairs=30, force=force_bootstrap
+        )
+
+    # Summarise scenes so each batch is translated knowing what is going on (resumable: scenes
+    # that already have a summary are skipped, so reruns are cheap).
+    if (force_bootstrap or not skip_bootstrap) and check_server_health(
+        project.config.llm.base_url
+    ):
+        _LOG.info("Đang tóm tắt các phân cảnh để làm ngữ cảnh dịch...")
+        summarize_scenes_with_llm(
+            project, db, LLMClient(project.config.llm), max_scenes=150, force=False
+        )
 
     # Sync character relationships with relationships.json if present
     rel_file = getattr(project, "relationships_path", None)

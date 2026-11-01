@@ -2453,8 +2453,8 @@ def test_t4_05_multi_language_tl_skeleton_generation(tmp_path: Path) -> None:
         assert (tl_path / "epilogue.rpy").is_file()
 
 
-def test_t4_06_real_world_CommercialVN-Beta_simulation(tmp_path: Path) -> None:
-    """Scenario 6: Scaled simulation of 49 .rpyc files (CommercialVN-Beta game structure)."""
+def test_t4_06_scaled_multi_file_simulation(tmp_path: Path) -> None:
+    """Scenario 6: Scaled simulation of 49 .rpyc files (large-scale multi-file Ren'Py project structure)."""
     game_dir = tmp_path / "game"
     game_dir.mkdir()
     num_files = 49
@@ -2464,9 +2464,9 @@ def test_t4_06_real_world_CommercialVN-Beta_simulation(tmp_path: Path) -> None:
         fname = f"chapter_{i:02d}.rpyc"
         stmts = [
             TranslateSayNode(
-                identifier=f"gw_{i}_{j}",
-                who="goddess" if j % 2 == 0 else "hero",
-                what=f"Goddess line {i}-{j}",
+                identifier=f"node_{i}_{j}",
+                who="character_a" if j % 2 == 0 else "character_b",
+                what=f"Synthetic line {i}-{j}",
                 filename=f"game/chapter_{i:02d}.rpy",
                 linenumber=j + 1,
             )

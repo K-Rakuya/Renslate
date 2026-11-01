@@ -37,19 +37,28 @@ from renslate.engine.glossary import (
     Glossary,
     _make_plural_aliases,
     clean_glossary,
+    collect_term_examples,
     mine_glossary_candidates,
     translate_glossary_with_llm,
 )
 from renslate.engine.graph import RelationshipGraph
+from renslate.engine.knowledge import collect_gender_evidence
 
 _LOG = logging.getLogger("renslate.analyze")
 
 __all__ = [
     "StylometricSummary",
     "bootstrap_characters_with_llm",
+    "build_persona_user_prompt",
+    "collect_character_narration_context",
+    "collect_incoming_vocatives",
     "extract_character_definitions",
+    "extract_interactive_dialogue_exchanges",
+    "extract_interaction_network",
+    "extract_salient_locations",
     "extract_scene_macro_contexts",
     "extract_stylometrics",
+    "find_protagonist_tag",
     "infer_character_gender_nlp",
     "infer_character_role_nlp",
     "infer_persona_fallback",
@@ -61,6 +70,7 @@ __all__ = [
     "run_analysis",
     "save_characters_to_json",
     "segment_scenes",
+    "stratified_speaker_samples",
     "sync_characters",
 ]
 
@@ -890,9 +900,16 @@ def infer_persona_fallback(
 
 PERSONA_SYSTEM_PROMPT = (
     "Bạn là chuyên gia biên kịch và bản địa hóa game visual novel cao cấp.\n"
-    "Nhiệm vụ của bạn là phân tích sâu hồ sơ tính cách nhân vật dựa trên tên, "
-    "chỉ số hành vi ngôn ngữ (stylometrics), và các câu thoại mẫu thực tế để phục vụ dịch thuật "
+    "Nhiệm vụ của bạn là phân tích sâu hồ sơ tính cách nhân vật dựa trên:\n"
+    "1. Danh xưng/hô ngữ người khác dùng khi gọi nhân vật (phản ánh địa vị, giai cấp, tôn ti trật tự).\n"
+    "2. Mạng lưới bạn thoại và tương tác đối thoại 2 chiều thực tế (đặc biệt là với MC, bộc lộ thái độ, cảm xúc và quan hệ thân sơ).\n"
+    "3. Không gian/phân cảnh xuất hiện tiêu biểu.\n"
+    "4. Ngữ cảnh dẫn chuyện kịch bản (Narration), chỉ số hành vi ngôn ngữ (stylometrics), và các câu thoại mẫu thực tế để phục vụ dịch thuật "
     "sang tiếng Việt chuẩn xác và tự nhiên.\n\n"
+    "NGUYÊN TẮC BẮT BUỘC:\n"
+    "- Bám sát câu thoại, tương tác 2 chiều và ngữ cảnh kịch bản đã cung cấp. Tuyệt đối KHÔNG suy diễn hoặc gán ép các trope anime xa lạ nếu câu thoại không thể hiện.\n"
+    "- Nếu kịch bản có ghi nhận chứng cứ giới tính (Nam/Nữ), bắt buộc tuân theo. Nếu không đủ căn cứ, hãy trả về 'unknown' thay vì đoán mò.\n"
+    "- Với pronoun_map: Bắt buộc dùng đúng tag của đối tượng (đặc biệt là tag của Nhân vật chính MC được chỉ định) làm key xưng hô. Dựa vào các cặp thoại 2 chiều thực tế để xác định cặp xưng hô đối ứng tiếng Việt chính xác tuyệt đối (VD: 'mc': 'anh - em', 'tôi - cậu', 'cháu - chú', 'ta - ngươi').\n\n"
     "Với mỗi nhân vật, hãy xác định đầy đủ các trường sau:\n"
     "- display_name_vi: Tên tiếng Việt tự nhiên (danh từ chung như 'Guard', 'Mercenary' "
     "dịch là 'Lính gác', 'Lính đánh thuê'; tên riêng người như 'Charlotte', 'Alice' giữ nguyên).\n"
@@ -943,13 +960,351 @@ PERSONA_SYSTEM_PROMPT = (
 )
 
 
+def find_protagonist_tag(
+    characters: Mapping[str, CharacterProfile],
+    units: Sequence[Unit],
+) -> str | None:
+    """Identify the protagonist / main character tag from project profiles and script."""
+    for tag, prof in characters.items():
+        t_low = tag.lower()
+        if t_low in _PROTAGONIST_TAGS:
+            return tag
+        if prof.role and "protagonist" in prof.role.lower():
+            return tag
+        if prof.display_name and prof.display_name.lower() in ("mc", "player", "hero", "protagonist"):
+            return tag
+
+    dialogue_units = [u for u in units if u.kind is UnitKind.DIALOGUE and u.speaker]
+    if dialogue_units:
+        counts = Counter(u.speaker for u in dialogue_units if u.speaker)
+        for tag, _ in counts.most_common(5):
+            if tag.lower() in _PROTAGONIST_TAGS:
+                return tag
+
+    return None
+
+
+def collect_character_narration_context(
+    units: Sequence[Unit],
+    tags: Sequence[str],
+    characters: Mapping[str, CharacterProfile],
+    max_lines: int = 3,
+) -> dict[str, list[str]]:
+    """Extract descriptive narration lines mentioning characters to ground persona analysis."""
+    wanted_names: dict[str, list[str]] = {}
+    for tag in tags:
+        names = [tag]
+        prof = characters.get(tag)
+        if prof and prof.display_name and prof.display_name.lower() != tag.lower():
+            names.append(prof.display_name)
+        wanted_names[tag] = names
+
+    patterns: dict[str, re.Pattern[str]] = {}
+    for tag, names in wanted_names.items():
+        sub_pats = [r"\b" + re.escape(n) + r"\b" for n in names if len(n) >= 2]
+        if sub_pats:
+            patterns[tag] = re.compile("|".join(sub_pats), re.IGNORECASE)
+
+    collected: dict[str, list[str]] = {tag: [] for tag in tags}
+    for u in units:
+        if u.kind is not UnitKind.DIALOGUE or u.speaker:
+            continue
+        text = u.source.strip()
+        if len(text) < 15 or len(text) > 220:
+            continue
+        for tag, pat in patterns.items():
+            if len(collected[tag]) < max_lines and pat.search(text):
+                clean_text = " ".join(text.split())
+                if clean_text not in collected[tag]:
+                    collected[tag].append(clean_text)
+
+    return collected
+
+
+def extract_interactive_dialogue_exchanges(
+    units: Sequence[Unit],
+    tags: Sequence[str],
+    characters: Mapping[str, CharacterProfile],
+    mc_tag: str | None = None,
+    max_exchanges: int = 2,
+) -> dict[str, list[str]]:
+    """Extract consecutive two-way dialogue exchanges (e.g. MC <-> Character).
+
+    Provides direct evidence of attitude, emotional tone, and reciprocal address.
+    """
+    wanted = set(tags)
+    dialogues = [
+        u
+        for u in units
+        if u.kind is UnitKind.DIALOGUE
+        and u.speaker
+        and u.speaker.strip()
+        and u.speaker.strip().lower() not in _NON_INTERACTION_TAGS
+    ]
+    if not dialogues:
+        return {t: [] for t in tags}
+
+    display_names: dict[str, str] = {}
+    for t in tags:
+        p = characters.get(t)
+        display_names[t] = p.display_name if (p and p.display_name) else t.capitalize()
+    if mc_tag and mc_tag not in display_names:
+        p = characters.get(mc_tag)
+        display_names[mc_tag] = p.display_name if (p and p.display_name) else mc_tag.capitalize()
+
+    # Pre-compute top conversation partners for each tag (excluding self)
+    partner_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
+    for i in range(len(dialogues) - 1):
+        u1, u2 = dialogues[i], dialogues[i + 1]
+        s1, s2 = u1.speaker, u2.speaker
+        if u1.label and u2.label and u1.label != u2.label:
+            continue
+        if s1 and s2 and s1 != s2 and abs(u2.seq - u1.seq) <= 4:
+            if s1 in wanted:
+                partner_counts[s1][s2] += 1
+            if s2 in wanted:
+                partner_counts[s2][s1] += 1
+
+    exchanges_by_tag: dict[str, list[str]] = {t: [] for t in tags}
+
+    for tag in tags:
+        target_partner: str | None = None
+        if mc_tag and tag.lower() == mc_tag.lower():
+            if partner_counts[tag]:
+                target_partner = partner_counts[tag].most_common(1)[0][0]
+        elif mc_tag and partner_counts[tag].get(mc_tag, 0) > 0:
+            target_partner = mc_tag
+        elif partner_counts[tag]:
+            target_partner = partner_counts[tag].most_common(1)[0][0]
+
+        if not target_partner:
+            continue
+
+        p_prof = characters.get(target_partner)
+        p_name = display_names.get(
+            target_partner,
+            p_prof.display_name if (p_prof and p_prof.display_name) else target_partner.capitalize(),
+        )
+        tag_name = display_names.get(tag, tag.capitalize())
+
+        candidates: list[str] = []
+        for i in range(len(dialogues) - 1):
+            u1, u2 = dialogues[i], dialogues[i + 1]
+            s1, s2 = u1.speaker, u2.speaker
+            if u1.label and u2.label and u1.label != u2.label:
+                continue
+            if abs(u2.seq - u1.seq) > 4:
+                continue
+            if (s1 == tag and s2 == target_partner) or (s1 == target_partner and s2 == tag):
+                t1 = " ".join(u1.source.strip().split())
+                t2 = " ".join(u2.source.strip().split())
+                if 5 <= len(t1) <= 180 and 5 <= len(t2) <= 180:
+                    n1 = tag_name if s1 == tag else p_name
+                    n2 = tag_name if s2 == tag else p_name
+                    cand = f'{n1}: "{t1}" ➔ {n2}: "{t2}"'
+                    if cand not in candidates:
+                        candidates.append(cand)
+
+        if not candidates:
+            continue
+
+        if len(candidates) <= max_exchanges:
+            exchanges_by_tag[tag] = candidates
+        else:
+            step = len(candidates) / max_exchanges
+            picked = [candidates[int(j * step)] for j in range(max_exchanges)]
+            exchanges_by_tag[tag] = picked
+
+    return exchanges_by_tag
+
+
+def collect_incoming_vocatives(
+    units: Sequence[Unit],
+    tags: Sequence[str],
+    characters: Mapping[str, CharacterProfile],
+    max_vocatives: int = 3,
+) -> dict[str, list[str]]:
+    """Extract vocatives, honorific titles, and direct address forms used by others to call characters.
+
+    Identifies forms like 'Lady Charlotte', 'Doctor', 'Charlotte-sama', 'Senpai'.
+    """
+    dialogues = [u for u in units if u.kind is UnitKind.DIALOGUE]
+
+    name_patterns: dict[str, list[tuple[re.Pattern[str], str]]] = {}
+    for tag in tags:
+        names = [tag]
+        prof = characters.get(tag)
+        if prof and prof.display_name and prof.display_name.lower() != tag.lower():
+            names.append(prof.display_name)
+
+        pats: list[tuple[re.Pattern[str], str]] = []
+        for n in names:
+            if len(n) < 2:
+                continue
+            escaped = re.escape(n)
+            # Prefix honorific title
+            pats.append(
+                (
+                    re.compile(
+                        r"\b(Lady|Lord|Master|Doctor|Dr\.|Professor|Prof\.|Captain|Commander|Princess|Prince|King|Queen|Sister|Miss|Mr\.|Mrs\.|Ms\.|Sir|Madam|Mistress|Boss|Officer)\s+"
+                        + escaped
+                        + r"\b",
+                        re.IGNORECASE,
+                    ),
+                    "prefix",
+                )
+            )
+            # Suffix honorific
+            pats.append(
+                (
+                    re.compile(
+                        escaped
+                        + r"(?:-(?:sama|san|kun|chan|senpai|sensei|dono|tan|shishou|neesan|niisan))\b",
+                        re.IGNORECASE,
+                    ),
+                    "suffix",
+                )
+            )
+            # Direct address with comma or exclamation
+            pats.append(
+                (
+                    re.compile(
+                        r"(?:^|[.!?]\s*)" + escaped + r"[,!]|,\s*" + escaped + r"(?:[.!?]|$)",
+                        re.IGNORECASE,
+                    ),
+                    "direct",
+                )
+            )
+        name_patterns[tag] = pats
+
+    vocatives_by_tag: dict[str, list[str]] = {t: [] for t in tags}
+    vocative_counters: dict[str, Counter[str]] = {t: Counter() for t in tags}
+
+    for u in dialogues:
+        text = u.source.strip()
+        if len(text) < 3 or len(text) > 300:
+            continue
+        spk = (u.speaker or "").strip()
+
+        for tag in tags:
+            if spk and spk.lower() == tag.lower():
+                continue
+
+            for pat, ptype in name_patterns[tag]:
+                m = pat.search(text)
+                if m:
+                    raw_match = m.group(0).strip(" ,.!?\"'")
+                    if ptype in ("prefix", "suffix"):
+                        clean_form = " ".join(raw_match.split())
+                        vocative_counters[tag][clean_form] += 3
+                    elif ptype == "direct":
+                        prof = characters.get(tag)
+                        d_name = prof.display_name if prof and prof.display_name else tag.capitalize()
+                        vocative_counters[tag][f"Gọi trực tiếp: '{d_name}'"] += 1
+
+    for tag in tags:
+        counts = vocative_counters[tag]
+        if counts:
+            top_items = [item for item, _ in counts.most_common(max_vocatives)]
+            vocatives_by_tag[tag] = top_items
+
+    return vocatives_by_tag
+
+
+def extract_interaction_network(
+    units: Sequence[Unit],
+    tags: Sequence[str],
+    characters: Mapping[str, CharacterProfile],
+    max_partners: int = 3,
+) -> dict[str, list[str]]:
+    """Calculate the primary conversational co-occurrence network for characters."""
+    wanted = set(tags)
+    dialogues = [
+        u
+        for u in units
+        if u.kind is UnitKind.DIALOGUE
+        and u.speaker
+        and u.speaker.strip()
+        and u.speaker.strip().lower() not in _NON_INTERACTION_TAGS
+    ]
+
+    partner_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
+    for i in range(len(dialogues) - 1):
+        u1, u2 = dialogues[i], dialogues[i + 1]
+        s1, s2 = u1.speaker, u2.speaker
+        if u1.label and u2.label and u1.label != u2.label:
+            continue
+        if not s1 or not s2 or s1 == s2 or abs(u2.seq - u1.seq) > 4:
+            continue
+        if s1 in wanted:
+            partner_counts[s1][s2] += 1
+        if s2 in wanted:
+            partner_counts[s2][s1] += 1
+
+    network_by_tag: dict[str, list[str]] = {t: [] for t in tags}
+    for tag in tags:
+        counts = partner_counts[tag]
+        total = sum(counts.values())
+        if total == 0:
+            continue
+        partners_formatted: list[str] = []
+        for p_tag, c in counts.most_common(max_partners):
+            prof = characters.get(p_tag)
+            p_name = prof.display_name if prof and prof.display_name else p_tag.capitalize()
+            pct = round((c / total) * 100)
+            partners_formatted.append(f"{p_name} ({pct}%)")
+        network_by_tag[tag] = partners_formatted
+
+    return network_by_tag
+
+
+def extract_salient_locations(
+    units: Sequence[Unit],
+    tags: Sequence[str],
+    max_locations: int = 2,
+) -> dict[str, list[str]]:
+    """Determine the most frequent locations and scene contexts where characters speak."""
+    location_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
+    dialogues = [u for u in units if u.kind is UnitKind.DIALOGUE and u.speaker]
+
+    for u in dialogues:
+        spk = u.speaker
+        if spk in location_counts:
+            lbl = u.label or ""
+            loc, _ = infer_scene_cues(lbl)
+            if loc:
+                location_counts[spk][loc] += 1
+            elif lbl:
+                lbl_lower = lbl.lower()
+                if lbl_lower not in ("start", "prologue", "splashscreen", "main_menu", "common"):
+                    clean_lbl = lbl.replace("_", " ").strip().title()
+                    location_counts[spk][f"Cảnh {clean_lbl}"] += 1
+
+    out: dict[str, list[str]] = {}
+    for tag in tags:
+        counts = location_counts[tag]
+        if counts:
+            out[tag] = [loc for loc, _ in counts.most_common(max_locations)]
+        else:
+            out[tag] = []
+    return out
+
+
 def build_persona_user_prompt(
     chunk_tags: Sequence[str],
     existing_chars: Mapping[str, CharacterProfile],
     samples_by_speaker: Mapping[str, Sequence[str]],
     stylometrics_by_speaker: Mapping[str, StylometricSummary],
+    narration_by_speaker: Mapping[str, Sequence[str]] | None = None,
+    gender_evidence_by_speaker: Mapping[str, Any] | None = None,
+    mc_tag: str | None = None,
+    max_samples: int = 4,
+    interactive_exchanges_by_speaker: Mapping[str, Sequence[str]] | None = None,
+    vocatives_by_speaker: Mapping[str, Sequence[str]] | None = None,
+    interaction_partners_by_speaker: Mapping[str, Sequence[str]] | None = None,
+    salient_locations_by_speaker: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
-    """Build user prompt with stylometrics and formatted dialogue samples."""
+    """Build user prompt with stylometrics, script context, and formatted dialogue samples."""
     char_blocks: list[str] = []
     for tag in chunk_tags:
         prof = existing_chars.get(tag)
@@ -958,21 +1313,114 @@ def build_persona_user_prompt(
         sty = stylometrics_by_speaker.get(tag)
         sty_desc = sty.summary_text() if sty else "Không có dữ liệu thống kê"
 
+        gender_hint = ""
+        if gender_evidence_by_speaker and tag in gender_evidence_by_speaker:
+            ev = gender_evidence_by_speaker[tag]
+            m_count = getattr(ev, "male", 0)
+            f_count = getattr(ev, "female", 0)
+            if m_count >= 3 and m_count > f_count * 2:
+                gender_hint = f" (Chứng cứ kịch bản: Nam, {m_count} đại từ he/him)"
+            elif f_count >= 3 and f_count > m_count * 2:
+                gender_hint = f" (Chứng cứ kịch bản: Nữ, {f_count} đại từ she/her)"
+
+        loc_lines = salient_locations_by_speaker.get(tag, []) if salient_locations_by_speaker else []
+        loc_formatted = ""
+        if loc_lines:
+            loc_formatted = f"\n  Không gian xuất hiện tiêu biểu: {', '.join(loc_lines)}"
+
+        net_lines = (
+            interaction_partners_by_speaker.get(tag, []) if interaction_partners_by_speaker else []
+        )
+        net_formatted = ""
+        if net_lines:
+            net_formatted = f"\n  Mạng lưới bạn thoại chính: {', '.join(net_lines)}"
+
+        voc_lines = vocatives_by_speaker.get(tag, []) if vocatives_by_speaker else []
+        voc_formatted = ""
+        if voc_lines:
+            voc_formatted = f"\n  Danh xưng/Hô ngữ người khác dùng khi gọi: {', '.join(voc_lines)}"
+
+        narr_lines = narration_by_speaker.get(tag, []) if narration_by_speaker else []
+        narr_formatted = ""
+        if narr_lines:
+            narr_formatted = "\n  Ngữ cảnh xuất hiện (Narration kịch bản):\n    " + "\n    ".join(
+                f'- "{nl}"' for nl in narr_lines
+            )
+
+        exchanges = (
+            interactive_exchanges_by_speaker.get(tag, [])
+            if interactive_exchanges_by_speaker
+            else []
+        )
+        exchanges_formatted = ""
+        if exchanges:
+            exchanges_formatted = "\n  Tương tác đối thoại 2 chiều thực tế (với MC / bạn thoại):\n    " + "\n    ".join(
+                f"- {ex}" for ex in exchanges
+            )
+
         if samples:
-            samples_formatted = "\n    ".join(f'{i+1}. "{s}"' for i, s in enumerate(samples[:4]))
+            samples_formatted = "\n    ".join(
+                f'{i+1}. "{s}"' for i, s in enumerate(samples[:max_samples])
+            )
         else:
             samples_formatted = "    (Không có thoại)"
 
         block = (
             f"- Tag: {tag}\n"
-            f"  Tên: {disp}\n"
-            f"  Chỉ số hành vi thoại (Stylometrics): {sty_desc}\n"
+            f"  Tên: {disp}{gender_hint}"
+            f"{loc_formatted}"
+            f"{net_formatted}"
+            f"{voc_formatted}\n"
+            f"  Chỉ số hành vi thoại (Stylometrics): {sty_desc}"
+            f"{narr_formatted}"
+            f"{exchanges_formatted}\n"
             f"  Thoại mẫu thực tế:\n{samples_formatted}"
         )
         char_blocks.append(block)
 
-    prefix = "Phân tích hồ sơ tính cách và phong thái đối thoại cho các nhân vật sau:\n\n"
-    return prefix + "\n\n".join(char_blocks)
+    prefix_parts = ["Phân tích hồ sơ tính cách và phong thái đối thoại cho các nhân vật sau:"]
+    if mc_tag:
+        mc_prof = existing_chars.get(mc_tag)
+        mc_disp = mc_prof.display_name if mc_prof else mc_tag
+        prefix_parts.append(
+            f"\n[LƯU Ý NHÂN VẬT CHÍNH - MC]: Nhân vật chính của game có tag là '{mc_tag}' (tên: '{mc_disp}'). "
+            f"Khi thiết lập pronoun_map, BẮT BUỘC dùng tag '{mc_tag}' làm key xưng hô đối ứng (VD: '{mc_tag}': 'em - anh')."
+        )
+    prefix_parts.append("\n\n")
+    return "".join(prefix_parts) + "\n\n".join(char_blocks)
+
+
+def stratified_speaker_samples(
+    units: Sequence[Unit], tags: Sequence[str], per_speaker: int = 4
+) -> dict[str, list[str]]:
+    """Pick sample lines spread across the whole script, not just its opening.
+
+    A character's voice (and gender cues, address forms) often changes or only shows up late;
+    taking the first few lines describes them as they are in the prologue. Lines are bucketed
+    by position and the longest line of each bucket is kept, so the samples cover the story
+    and carry enough text to show style.
+    """
+    wanted = set(tags)
+    by_speaker: dict[str, list[str]] = {}
+    for u in units:
+        if u.speaker in wanted and u.kind is UnitKind.DIALOGUE:
+            text = u.source.strip()
+            if len(text) > 8:
+                by_speaker.setdefault(u.speaker, []).append(text)
+    out: dict[str, list[str]] = {}
+    for tag, lines in by_speaker.items():
+        if len(lines) <= per_speaker:
+            out[tag] = list(lines)
+            continue
+        picked: list[str] = []
+        n = len(lines)
+        for b in range(per_speaker):
+            bucket = lines[b * n // per_speaker : (b + 1) * n // per_speaker]
+            best = max(bucket, key=lambda t: min(len(t), 160))
+            if best not in picked:
+                picked.append(best)
+        out[tag] = picked
+    return out
 
 
 def bootstrap_characters_with_llm(
@@ -981,7 +1429,7 @@ def bootstrap_characters_with_llm(
     llm: Any,
     *,
     max_chars: int = 25,
-    chunk_size: int = 6,
+    chunk_size: int = 4,
 ) -> dict[str, CharacterProfile]:
     """Bootstrap character personalities, roles, and Vietnamese pronouns using the local LLM.
 
@@ -1005,17 +1453,31 @@ def bootstrap_characters_with_llm(
     if not top_speakers:
         return existing_chars
 
-    # Collect 3-4 diverse sample lines for each speaker
-    samples_by_speaker: dict[str, list[str]] = {}
-    for u in all_units:
-        if u.speaker in top_speakers and u.source.strip():
-            lst = samples_by_speaker.setdefault(u.speaker, [])
-            if len(lst) < 4 and len(u.source) > 8:
-                lst.append(u.source.strip())
+    # Collect diverse sample lines for each speaker spread across the script
+    samples_by_speaker = stratified_speaker_samples(all_units, top_speakers, per_speaker=6)
+    narration_by_speaker = collect_character_narration_context(
+        all_units, top_speakers, existing_chars
+    )
+    gender_evidence_by_speaker = collect_gender_evidence(all_units, existing_chars)
+    mc_tag = find_protagonist_tag(existing_chars, all_units)
 
     stylometrics_by_speaker = {
         tag: extract_stylometrics(samples_by_speaker.get(tag, [])) for tag in top_speakers
     }
+
+    # Extract high-value contextual signals for character persona diagnosis
+    interactive_exchanges_by_speaker = extract_interactive_dialogue_exchanges(
+        all_units, top_speakers, existing_chars, mc_tag=mc_tag
+    )
+    vocatives_by_speaker = collect_incoming_vocatives(
+        all_units, top_speakers, existing_chars
+    )
+    interaction_partners_by_speaker = extract_interaction_network(
+        all_units, top_speakers, existing_chars
+    )
+    salient_locations_by_speaker = extract_salient_locations(
+        all_units, top_speakers
+    )
 
     # Build bidirectional lookup table (by tag, lower tag, display name, lower display name)
     tag_lookup: dict[str, str] = {}
@@ -1028,7 +1490,18 @@ def bootstrap_characters_with_llm(
     for i in range(0, len(top_speakers), chunk_size):
         chunk_tags = top_speakers[i : i + chunk_size]
         user_prompt = build_persona_user_prompt(
-            chunk_tags, existing_chars, samples_by_speaker, stylometrics_by_speaker
+            chunk_tags,
+            existing_chars,
+            samples_by_speaker,
+            stylometrics_by_speaker,
+            narration_by_speaker=narration_by_speaker,
+            gender_evidence_by_speaker=gender_evidence_by_speaker,
+            mc_tag=mc_tag,
+            max_samples=6,
+            interactive_exchanges_by_speaker=interactive_exchanges_by_speaker,
+            vocatives_by_speaker=vocatives_by_speaker,
+            interaction_partners_by_speaker=interaction_partners_by_speaker,
+            salient_locations_by_speaker=salient_locations_by_speaker,
         )
 
         try:
@@ -1075,6 +1548,13 @@ def bootstrap_characters_with_llm(
                     disp = vi_name
 
                 gender = data.get("gender") or (cur.gender if cur else "unknown")
+                if gender in (None, "", "unknown") and tag in gender_evidence_by_speaker:
+                    gev = gender_evidence_by_speaker[tag]
+                    if gev.male >= 3 and gev.male > gev.female * 2:
+                        gender = "male"
+                    elif gev.female >= 3 and gev.female > gev.male * 2:
+                        gender = "female"
+
                 role = data.get("role") or (cur.role if cur else "")
                 speech_style = data.get("speech_style") or (cur.speech_style if cur else "")
                 pronoun_map = data.get("pronoun_map") or (cur.pronoun_map if cur else {})
@@ -1094,6 +1574,13 @@ def bootstrap_characters_with_llm(
                                 pronoun_map = {}
                 if not isinstance(pronoun_map, dict):
                     pronoun_map = {}
+
+                # Bidirectional mapping between 'mc' and actual protagonist tag
+                if mc_tag and mc_tag.lower() != "mc":
+                    if "mc" in pronoun_map and mc_tag not in pronoun_map:
+                        pronoun_map[mc_tag] = pronoun_map["mc"]
+                    elif mc_tag in pronoun_map and "mc" not in pronoun_map:
+                        pronoun_map["mc"] = pronoun_map[mc_tag]
 
                 archetype = str(data.get("archetype") or "").strip()
                 tone_and_voice = str(data.get("tone_and_voice") or "").strip()
@@ -1550,7 +2037,9 @@ def run_analysis(
 
                 untranslated.sort(key=_freq, reverse=True)
                 to_trans = untranslated[:150]
-                enriched = translate_glossary_with_llm(to_trans, llm)
+                enriched = translate_glossary_with_llm(
+                    to_trans, llm, examples=collect_term_examples(to_trans, db.all_units())
+                )
                 trans_map = {e.term: e for e in enriched if e.translation.strip()}
                 final_entries = [trans_map.get(e.term, e) for e in cleaned]
                 Glossary(final_entries).save_file(glossary_file)

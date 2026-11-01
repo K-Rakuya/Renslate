@@ -21,6 +21,7 @@ from renslate.renpy.extract import (
     FLAG_MARKUP_INVALID,
     FLAG_SOURCE_CHANGED,
     ExtractReport,
+    deduplicate_tl_strings,
     extract_project,
     scan_project,
 )
@@ -106,6 +107,7 @@ __all__ = [
     "builtin_ui",
     "decode_say_text",
     "decompile_rpyc",
+    "deduplicate_tl_strings",
     "encode_say_text",
     "extract",
     "extract_character_definitions_from_rpyc",

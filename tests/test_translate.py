@@ -537,3 +537,41 @@ def test_pipeline_passes_batch_grammar_to_llm(tmp_path: Path) -> None:
         assert captured_grammar is not None
         assert r'\"d:1\"' in captured_grammar
 
+
+def test_pipeline_budget_scales_with_large_source_tokens(tmp_path: Path) -> None:
+    """Verify that batches with large text allocate adequate output token budget."""
+    root = tmp_path / "game_root"
+    (root / "game").mkdir(parents=True)
+    project = Project.create(root)
+    cfg = Config()
+
+    # Create a 1,500-char devlog string (approx 400+ tokens)
+    devlog_text = "Update 0.4.6: New beach special events with multiple features. " * 25
+    with project.open_db() as db:
+        db.save_unit(Unit("s:devlog_1", UnitKind.STRING, 1, devlog_text, Status.PENDING))
+
+    captured_budget: int | None = None
+
+    def mock_complete_json(
+        system: str,
+        user: str,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], int, int]:
+        nonlocal captured_budget
+        captured_budget = max_tokens
+        return ({"s:devlog_1": "Bản dịch devlog"}, 100, 50)
+
+    with (
+        project.open_db() as db,
+        patch("renslate.llm.LLMClient.complete_json", side_effect=mock_complete_json),
+    ):
+        pipeline = TranslationPipeline(project, db, cfg)
+        stats = pipeline.run()
+
+        assert stats.failed == 0
+        # Budget must scale with source tokens (> 600) rather than defaulting to min 350
+        assert captured_budget is not None
+        assert captured_budget > 600
+
+
