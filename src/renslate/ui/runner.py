@@ -318,6 +318,7 @@ def run_unattended_pipeline(
     auto_apply: bool = False,
     plain: bool = False,
     bootstrap: bool | None = None,
+    guard: bool = True,
 ) -> int:
     """Execute the autonomous translation process until 100% finished."""
     global _STOP_REQUESTED, _INTERRUPT_COUNT
@@ -427,6 +428,8 @@ def run_unattended_pipeline(
         rel_graph = RelationshipGraph.sync(db, rel_file)
 
         chars = db.get_characters()
+        scene_row = db.execute("SELECT COUNT(*) FROM scenes").fetchone()
+        scene_count = scene_row[0] if scene_row else 0
         banner_info = [
             ("Dự án", str(project.root)),
             ("Ngôn ngữ đích", f"{project.config.target_lang.upper()} (Tiếng Việt)"),
@@ -438,9 +441,19 @@ def run_unattended_pipeline(
             banner_info.append(
                 ("Nhân vật & Quan hệ", f"{len(chars):,} nhân vật, {rel_graph.edge_count:,} quan hệ")
             )
+        if scene_count > 0:
+            banner_info.append(("Phân cảnh kịch bản", f"{scene_count:,} phân cảnh"))
+        banner_info.append(
+            (
+                "Kiểm soát ảo giác",
+                f"{c_green}Bật (Continuous LLM Guard){c_reset}"
+                if (guard and not plain)
+                else ("Bật" if guard else "Tắt"),
+            )
+        )
         banner_info.extend([
             ("Tiến độ hiện tại", render_progress_bar(initial_pct)),
-            ("Kích thước lô", f"{batch_chunk} dòng / chu kỳ"),
+            ("Kích thước lô", f"{batch_chunk} dòng / chu kỳ (Knapsack Dynamic Packing)"),
         ])
         banner_text = render_banner(
             "Renslate — Unattended Translation Runner",
@@ -450,7 +463,21 @@ def run_unattended_pipeline(
         )
         print("\n" + banner_text + "\n")
 
-        pipeline = TranslationPipeline(project, db, config, graph=rel_graph)
+        guard_instance = None
+        if guard:
+            try:
+                from renslate.engine.hallucination import HallucinationGuard
+
+                guard_instance = HallucinationGuard(config=config.llm)
+                _LOG.info("Đã kích hoạt Continuous LLM Hallucination Guard.")
+            except Exception as g_err:
+                _LOG.warning(
+                    "Không thể khởi tạo HallucinationGuard (%s), tiếp tục với bộ lọc chuẩn.", g_err
+                )
+
+        pipeline = TranslationPipeline(
+            project, db, config, graph=rel_graph, hallucination_guard=guard_instance
+        )
 
         session_start_time = time.time()
         session_translated = 0
@@ -465,6 +492,10 @@ def run_unattended_pipeline(
             completed_units=initial_translated,
             pending_units=initial_pending,
             failed_units=initial_failed,
+            guard_status="Bật" if guard else "Tắt",
+            character_count=len(chars),
+            relation_count=rel_graph.edge_count,
+            scene_count=scene_count,
         )
         dashboard = LiveDashboard(dashboard_state)
 
@@ -517,8 +548,33 @@ def run_unattended_pipeline(
                 dashboard_state.current_batch = batch_idx
                 dashboard_state.batch_latency_s = chunk_duration
                 dashboard_state.lookback_size = getattr(pipeline, "lookback_size", 0)
+                try:
+                    audit_row = db.execute(
+                        "SELECT COUNT(*) FROM qa_audit_log WHERE stage = 'llm_hallucination_guard' AND verdict = 'FAIL'"
+                    ).fetchone()
+                    if audit_row:
+                        dashboard_state.guard_flagged = int(audit_row[0])
+                except Exception:
+                    pass
+
+                try:
+                    last_u = db.execute(
+                        "SELECT speaker, target FROM units "
+                        "WHERE target IS NOT NULL AND target != '' "
+                        "ORDER BY updated_at DESC, seq DESC LIMIT 1"
+                    ).fetchone()
+                    if last_u:
+                        dashboard_state.recent_speaker = str(last_u[0] or "")
+                        dashboard_state.recent_target = str(last_u[1] or "")
+                except Exception:
+                    pass
 
                 if stats.total_pending == 0 or remaining_work == 0:
+                    dashboard_state.completed_units = cur_total
+                    dashboard_state.pending_units = 0
+                    if not plain and IS_TTY:
+                        dashboard.update(width=78, plain=False)
+                        dashboard.stop()
                     _LOG.info(
                         "%s[HOÀN TẤT]%s Tất cả các dòng thoại cần dịch đã hoàn tất 100%%!",
                         c_green,
@@ -527,7 +583,7 @@ def run_unattended_pipeline(
                     break
 
                 if not plain and IS_TTY:
-                    print(dashboard.render(width=78, plain=False))
+                    dashboard.update(width=78, plain=False)
                 else:
                     batch_msg = render_batch_card(
                         batch_idx,
@@ -564,6 +620,8 @@ def run_unattended_pipeline(
                 time.sleep(0.01)
         except KeyboardInterrupt:
             _LOG.warning("Tiến trình đã được dừng ngay lập tức theo yêu cầu của bạn (Ctrl+C).")
+        finally:
+            dashboard.stop()
 
         final_counts = query_db_status(db)
         final_total = sum(final_counts.values())
@@ -582,6 +640,8 @@ def run_unattended_pipeline(
             failed_units=final_failed,
             speed_u_s=final_avg_speed,
             elapsed_s=total_elapsed,
+            guard_status="Bật" if guard else "Tắt",
+            guard_flagged=dashboard_state.guard_flagged,
         )
         print("\n" + render_summary_card(summary_state, width=80, plain=plain) + "\n")
 
@@ -637,6 +697,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Bỏ qua bước LLM bootstrapping cho nhân vật và glossary",
     )
+    parser.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="Bỏ qua bước LLM Hallucination Guard quét và kiểm soát ảo giác",
+    )
     args = parser.parse_args(argv)
 
     if args.interactive:
@@ -658,4 +723,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         auto_apply=args.auto_apply,
         plain=args.plain,
         bootstrap=bootstrap_arg,
+        guard=not args.no_guard,
     )

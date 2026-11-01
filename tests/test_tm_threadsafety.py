@@ -29,7 +29,7 @@ def test_concurrent_lookup_fuzzy_and_record(tmp_path: Path) -> None:
             try:
                 for _ in range(150):
                     tm.lookup_fuzzy("The quick brown fox number 7 jumps over", threshold=0.5)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [threading.Thread(target=reader) for _ in range(2)]

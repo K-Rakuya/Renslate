@@ -154,9 +154,9 @@ def test_pure_rpyc_e2e_translation_lifecycle(tmp_path: Path) -> None:
         # Protagonist identification
         assert "Protagonist" in p_mc.role
 
-        # Relational pronoun matrix inferred from reciprocal dialogue interactions
-        assert p_mc.pronoun_map.get("e") == "anh - em"
-        assert p_e.pronoun_map.get("mc") == "em - anh"
+        # Relational pronoun matrix inferred from reciprocal dialogue interactions (formal acquaintance per RFC 3.1)
+        assert p_mc.pronoun_map.get("e") == "tôi - cô"
+        assert p_e.pronoun_map.get("mc") == "tôi - bạn"
 
         # Scene segmentation
         scenes = db.get_scenes()
@@ -219,8 +219,8 @@ def test_pure_rpyc_e2e_translation_lifecycle(tmp_path: Path) -> None:
             "Protagonist và Eileen đang đối thoại trực tiếp" in active_prompt
             or "Eileen và Protagonist đang đối thoại trực tiếp" in active_prompt
         )
-        assert "xưng 'anh', gọi 'em'" in active_prompt
-        assert "xưng 'em', gọi 'anh'" in active_prompt
+        assert "xưng 'tôi', gọi 'cô'" in active_prompt
+        assert "xưng 'tôi', gọi 'bạn'" in active_prompt
         assert "TÓM TẮT CẢNH HIỆN TẠI" in active_prompt
 
         # Verify DB units are marked TRANSLATED

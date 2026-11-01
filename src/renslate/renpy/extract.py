@@ -311,7 +311,7 @@ def sync_sibling_tl_strings(project: Project, scanner: TranslationScanner) -> in
 
     known_sources = {u.source for u in scanner.units}
     target_lang = project.config.target_lang
-    from renslate.renpy.rpyc import RpycFile, SLOT_STATEMENTS_POST, _unpack_stmts
+    from renslate.renpy.rpyc import SLOT_STATEMENTS_POST, RpycFile, _unpack_stmts
 
     by_file: dict[str, list[tuple[str, int, str]]] = {}
     seen: set[str] = set()

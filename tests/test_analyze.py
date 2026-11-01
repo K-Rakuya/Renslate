@@ -25,8 +25,8 @@ from renslate.engine.analyze import (
     build_persona_user_prompt,
     collect_incoming_vocatives,
     extract_character_definitions,
-    extract_interactive_dialogue_exchanges,
     extract_interaction_network,
+    extract_interactive_dialogue_exchanges,
     extract_salient_locations,
     extract_stylometrics,
     infer_character_gender_nlp,
@@ -581,16 +581,27 @@ def test_infer_semantic_relationship_hierarchy() -> None:
     assert rel_host is not None
     assert rel_host[0] == RelationshipKind.RIVAL_HOSTILE
 
-    # 6. Heroine vs Generic NPC
+    # 6. Heroine with explicit romance cues vs Unclassified Main Cast vs Generic NPC
     rel_heroine = infer_semantic_relationship(
         "mc",
         {"role": "Nhân vật chính (Protagonist)", "gender": "male"},
         "liana",
-        {"role": "Nhân vật chính tuyến (Main Cast)", "gender": "female"},
+        {"role": "Nữ chính / Người yêu (Heroine / Lover)", "gender": "female"},
         is_mc=True,
     )
     assert rel_heroine is not None
     assert rel_heroine[0] == RelationshipKind.ROMANCE
+
+    # RFC Section 3.1 Safeguard: Female main cast without romance cues must default to FORMAL_ACQUAINTANCE
+    rel_main_cast_neutral = infer_semantic_relationship(
+        "mc",
+        {"role": "Nhân vật chính (Protagonist)", "gender": "male"},
+        "elena",
+        {"role": "Nhân vật chính tuyến (Main Cast)", "gender": "female"},
+        is_mc=True,
+    )
+    assert rel_main_cast_neutral is not None
+    assert rel_main_cast_neutral[0] == RelationshipKind.FORMAL_ACQUAINTANCE
 
     rel_npc = infer_semantic_relationship(
         "mc",

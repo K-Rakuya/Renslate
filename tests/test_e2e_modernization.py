@@ -364,7 +364,7 @@ def contract_extract_dialogue(path: Path) -> list[ExtractedDialogueItem]:
         elif isinstance(node, SayNode) and hasattr(node, "identifier"):
             results.append(
                 ExtractedDialogueItem(
-                    identifier=node.identifier,
+                    identifier=node.identifier or "",
                     who=getattr(node, "who", None),
                     what=getattr(node, "what", ""),
                     source_file=getattr(node, "filename", "game/script.rpy"),

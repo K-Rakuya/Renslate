@@ -31,7 +31,7 @@ version = { attr = "renslate.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-renslate = ["py.typed"]
+renslate = ["py.typed", "data/**/*.json", "data/dictionaries/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,6 +45,7 @@ src = ["src", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PTH", "RUF"]
+ignore = ["E501"]
 
 [tool.mypy]
 strict = true

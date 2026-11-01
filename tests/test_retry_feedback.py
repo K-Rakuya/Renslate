@@ -64,7 +64,7 @@ def test_stubborn_failures_escalate_to_single_with_latest_feedback() -> None:
 
 
 def test_few_failures_skip_cluster_stage() -> None:
-    calls, (result, stages) = run_ladder(2, "never")
+    calls, (_result, stages) = run_ladder(2, "never")
     assert [s for s, _ in stages] == ["single"]
     assert len(calls) == 2
 

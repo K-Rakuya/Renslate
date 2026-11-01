@@ -6,6 +6,7 @@ corpus breakdown, and recent bilingual dialogue activity stream.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import shutil
 import sys
@@ -14,9 +15,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from renslate.core.config import AppConfig
 from renslate.ui.progress import format_duration, format_speed, render_progress_bar
 from renslate.ui.theme import (
-    BOX_HORIZ,
     BOX_LIGHT_HORIZ,
     BOX_LIGHT_T_LEFT,
     BOX_LIGHT_T_RIGHT,
@@ -47,13 +48,58 @@ if TYPE_CHECKING:
     from renslate.core.project import Project
 
 
+def _truncate_visible(text: str, max_cells: int) -> str:
+    """Safely truncate text to fit max_cells terminal width."""
+    if visible_len(text) <= max_cells:
+        return text
+    limit = max(0, max_cells - 3)
+    curr: list[str] = []
+    width = 0
+    for ch in text:
+        w = char_width(ch)
+        if width + w > limit:
+            break
+        curr.append(ch)
+        width += w
+    return "".join(curr) + "..."
+
+
+def _box_line(
+    content: str,
+    width: int,
+    border_left: str = BOX_LIGHT_VERT,
+    border_right: str = BOX_LIGHT_VERT,
+    c_border: str = "",
+    c_reset: str = "",
+) -> str:
+    """Render a single interior box line with precise Unicode padding."""
+    vis = visible_len(content)
+    pad = max(0, width - 4 - vis)
+    return (
+        f"{c_border}{border_left}{c_reset} {content}{' ' * pad} {c_border}{border_right}{c_reset}"
+    )
+
+
+def _box_divider(
+    width: int,
+    char_left: str = BOX_LIGHT_T_RIGHT,
+    char_mid: str = BOX_LIGHT_HORIZ,
+    char_right: str = BOX_LIGHT_T_LEFT,
+    c_border: str = "",
+    c_reset: str = "",
+) -> str:
+    """Render a horizontal box partition line."""
+    mid = char_mid * max(0, width - 2)
+    return f"{c_border}{char_left}{mid}{char_right}{c_reset}"
+
+
 @dataclass
 class DashboardState:
     """State object for runner pipeline live updates."""
 
     model_name: str = "Unknown"
     server_status: str = "Online"
-    server_url: str = "http://127.0.0.1:8080"
+    server_url: str = field(default_factory=lambda: AppConfig.server_base_url)
     total_units: int = 0
     completed_units: int = 0
     pending_units: int = 0
@@ -65,7 +111,14 @@ class DashboardState:
     total_batches: int = 0
     batch_latency_s: float = 0.0
     lookback_size: int = 0
+    guard_status: str = "Bật"
+    guard_flagged: int = 0
     recent_errors: list[str] = field(default_factory=list)
+    character_count: int = 0
+    relation_count: int = 0
+    scene_count: int = 0
+    recent_speaker: str = ""
+    recent_target: str = ""
 
 
 class LiveDashboard:
@@ -73,52 +126,204 @@ class LiveDashboard:
 
     def __init__(self, state: DashboardState | None = None) -> None:
         self.state = state or DashboardState()
+        self._last_rendered_lines: int = 0
+        self._started: bool = False
 
-    def render(self, width: int = 70, plain: bool = False) -> str:
-        """Render multi-panel dashboard snapshot."""
+    def start(self) -> None:
+        """Initialize live display and hide terminal cursor."""
+        if IS_TTY and not self._started:
+            try:
+                sys.stdout.write("\033[?25l")
+                sys.stdout.flush()
+            except Exception:
+                pass
+            self._started = True
+
+    def stop(self) -> None:
+        """Clean up live display and restore terminal cursor."""
+        if IS_TTY and self._started:
+            try:
+                sys.stdout.write("\033[?25h")
+                sys.stdout.flush()
+            except Exception:
+                pass
+        self._started = False
+        self._last_rendered_lines = 0
+
+    def update(self, width: int = 78, plain: bool = False) -> None:
+        """Update live dashboard display in-place line-by-line without scrolling."""
+        if plain or not IS_TTY:
+            sys.stdout.write(self.render(width=width, plain=True) + "\n")
+            sys.stdout.flush()
+            return
+
+        if not self._started:
+            self.start()
+
+        content = self.render(width=width, plain=False)
+        lines = content.splitlines()
+
+        if self._last_rendered_lines > 0:
+            # Move cursor up to first line of previous frame and clear downward
+            sys.stdout.write(f"\033[{self._last_rendered_lines}F\033[J")
+
+        sys.stdout.write(content + "\n")
+        sys.stdout.flush()
+        self._last_rendered_lines = len(lines)
+
+    def render(self, width: int = 76, plain: bool = False) -> str:
+        """Render multi-panel dashboard snapshot with modern visual hierarchy."""
+        w = max(50, width)
         st = self.state
         pct = (st.completed_units / st.total_units * 100.0) if st.total_units > 0 else 0.0
-        bar = render_progress_bar(pct, width=max(10, width - 25))
 
         use_color = (not plain) and IS_TTY
         c_cyan = C_CYAN if use_color else ""
         c_bold = C_BOLD if use_color else ""
+        c_dim = C_DIM if use_color else ""
         c_green = C_GREEN if use_color else ""
         c_yellow = C_YELLOW if use_color else ""
         c_red = C_RED if use_color else ""
         c_reset = C_RESET if use_color else ""
+        c_sky = C_SKY if use_color else ""
+        c_emerald = C_EMERALD if use_color else ""
+        c_indigo = C_INDIGO if use_color else ""
+        c_slate = C_SLATE if use_color else ""
 
+        c_border = c_slate
         lines: list[str] = []
-        divider = BOX_HORIZ * width
-        lines.append(f"{c_bold}{c_cyan}╔{divider}╗{c_reset}")
+
+        # 1. Top border (rounded)
         lines.append(
-            f"{c_bold}{c_cyan}║{c_reset} {c_bold}Renslate Autonomous Engine{c_reset} "
-            f"| Model: {c_green}{st.model_name}{c_reset} "
-            f"| Server: {st.server_status}"
+            _box_divider(w, BOX_ROUND_TL, BOX_LIGHT_HORIZ, BOX_ROUND_TR, c_border, c_reset)
         )
-        lines.append(f"{c_bold}{c_cyan}╠{divider}╣{c_reset}")
-        lines.append(f"{c_bold}{c_cyan}║{c_reset} Progress: {bar}")
+
+        # 2. Header
+        guard_badge = (
+            f"{c_emerald}● Bật{c_reset}"
+            if st.guard_status != "Tắt"
+            else f"{c_dim}○ Tắt{c_reset}"
+        )
+        if st.guard_flagged > 0 and st.guard_status != "Tắt":
+            guard_badge += f" ({c_yellow}{st.guard_flagged} cờ{c_reset})"
+
+        server_badge = (
+            f"{c_emerald}● Online{c_reset}"
+            if st.server_status == "Online"
+            else f"{c_red}○ Offline{c_reset}"
+        )
+
+        hdr_left = f"{c_bold}{c_sky}Renslate Autonomous Engine{c_reset}"
+        hdr_right = (
+            f"Model: {c_cyan}{st.model_name}{c_reset}  •  "
+            f"Server: {server_badge}  •  "
+            f"Guard: {guard_badge}"
+        )
+
+        if visible_len(hdr_left) + visible_len(hdr_right) + 6 <= w:
+            sp_pad = w - 4 - visible_len(hdr_left) - visible_len(hdr_right)
+            header_line = f"{hdr_left}{' ' * max(1, sp_pad)}{hdr_right}"
+            lines.append(_box_line(header_line, w, c_border=c_border, c_reset=c_reset))
+        else:
+            lines.append(_box_line(hdr_left, w, c_border=c_border, c_reset=c_reset))
+            lines.append(_box_line(hdr_right, w, c_border=c_border, c_reset=c_reset))
+
+        # 3. Divider
+        lines.append(
+            _box_divider(
+                w, BOX_LIGHT_T_RIGHT, BOX_LIGHT_HORIZ, BOX_LIGHT_T_LEFT, c_border, c_reset
+            )
+        )
+
+        # 4. Progress bar line
+        bar_len = max(10, min(32, w - 28))
+        bar = render_progress_bar(pct, width=bar_len)
+        prog_text = f"Progress: {c_emerald}{bar}{c_reset}"
+        lines.append(_box_line(prog_text, w, c_border=c_border, c_reset=c_reset))
+
+        # 5. Units line: completed/total, pending, failed
         fail_str = (
-            f"{c_red}{st.failed_units}{c_reset}" if st.failed_units > 0 else str(st.failed_units)
+            f"{c_red}{st.failed_units}{c_reset}"
+            if st.failed_units > 0 and use_color
+            else str(st.failed_units)
         )
-        lines.append(
-            f"{c_bold}{c_cyan}║{c_reset} Units: {c_green}{st.completed_units}{c_reset}"
-            f"/{st.total_units} "
-            f"| Pending: {c_yellow}{st.pending_units}{c_reset} "
-            f"| Failed: {fail_str}"
+        units_text = (
+            f"Units: {c_green}{st.completed_units}{c_reset}/{st.total_units}  •  "
+            f"Pending: {c_yellow}{st.pending_units}{c_reset}  •  "
+            f"Failed: {fail_str}"
         )
+        lines.append(_box_line(units_text, w, c_border=c_border, c_reset=c_reset))
+
+        # 6. Performance line: Speed, Batch, Latency, Lookback
         latency_str = f"{st.batch_latency_s:.2f}s" if st.batch_latency_s > 0 else "--"
-        lines.append(
-            f"{c_bold}{c_cyan}║{c_reset} Speed: {format_speed(st.speed_u_s)} "
-            f"| Batch: #{st.current_batch} ({latency_str}) "
-            f"| Lookback: {st.lookback_size}"
+        perf_text = (
+            f"Speed: {format_speed(st.speed_u_s)}  •  "
+            f"Batch: #{st.current_batch} ({latency_str})  •  "
+            f"Lookback: {st.lookback_size}"
         )
-        lines.append(
-            f"{c_bold}{c_cyan}║{c_reset} Elapsed: {format_duration(st.elapsed_s)} "
-            f"| ETA: {format_duration(st.eta_s)}"
+        lines.append(_box_line(perf_text, w, c_border=c_border, c_reset=c_reset))
+
+        # 7. Time line: Elapsed, ETA
+        time_text = (
+            f"Elapsed: {format_duration(st.elapsed_s)}  •  "
+            f"ETA: {format_duration(st.eta_s)}"
         )
-        lines.append(f"{c_bold}{c_cyan}╚{divider}╝{c_reset}")
+        lines.append(_box_line(time_text, w, c_border=c_border, c_reset=c_reset))
+
+        # 8. Script Context section (if populated)
+        has_context = (
+            st.character_count > 0 or st.relation_count > 0 or st.scene_count > 0
+        )
+        if has_context:
+            lines.append(
+                _box_divider(
+                    w, BOX_LIGHT_T_RIGHT, BOX_LIGHT_HORIZ, BOX_LIGHT_T_LEFT, c_border, c_reset
+                )
+            )
+            ctx_parts: list[str] = []
+            if st.character_count > 0:
+                ctx_parts.append(f"{c_indigo}{st.character_count:,} nhân vật{c_reset}")
+            if st.relation_count > 0:
+                ctx_parts.append(f"{c_indigo}{st.relation_count:,} quan hệ{c_reset}")
+            if st.scene_count > 0:
+                ctx_parts.append(f"{c_cyan}{st.scene_count:,} phân cảnh{c_reset}")
+            ctx_line = "Ngữ cảnh: " + "  •  ".join(ctx_parts)
+            lines.append(_box_line(ctx_line, w, c_border=c_border, c_reset=c_reset))
+
+        # 9. Recent dialogue preview (if populated)
+        if st.recent_speaker or st.recent_target:
+            lines.append(
+                _box_divider(
+                    w, BOX_LIGHT_T_RIGHT, BOX_LIGHT_HORIZ, BOX_LIGHT_T_LEFT, c_border, c_reset
+                )
+            )
+            spk = f"[{st.recent_speaker}]" if st.recent_speaker else "[Dẫn truyện]"
+            avail_w = max(10, w - visible_len(spk) - 18)
+            tgt_clean = _truncate_visible(st.recent_target.replace("\n", " "), avail_w)
+            recent_line = f"Mới nhất: {c_indigo}{spk}{c_reset} {c_bold}\"{tgt_clean}\"{c_reset}"
+            lines.append(_box_line(recent_line, w, c_border=c_border, c_reset=c_reset))
+
+        # 10. Bottom border (rounded)
+        lines.append(
+            _box_divider(w, BOX_ROUND_BL, BOX_LIGHT_HORIZ, BOX_ROUND_BR, c_border, c_reset)
+        )
+
+        # 11. Status / exit hint
+        if use_color:
+            lines.append(f"  {c_dim}[Ctrl+C] Dừng an toàn (ACID WAL){c_reset}")
+
         return "\n".join(lines)
+
+    def __enter__(self) -> LiveDashboard:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.stop()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.stop()
 
 
 TerminalDashboard = LiveDashboard
@@ -185,6 +390,14 @@ def render_summary_card(
         f"({state.completed_units:,} / {state.total_units:,} dòng)"
     )
     lines.append(f"  • Dòng còn lại     : {state.pending_units:,} dòng đang chờ")
+    guard_txt = (
+        f"{c_green}{state.guard_status}{c_reset}"
+        if state.guard_status != "Tắt"
+        else f"{c_reset}Tắt{c_reset}"
+    )
+    if state.guard_flagged > 0:
+        guard_txt += f" ({c_red}{state.guard_flagged:,} lỗi được ngăn chặn & sửa tự động{c_reset})"
+    lines.append(f"  • Kiểm soát ảo giác: {guard_txt}")
     db_msg = "Đã lưu an toàn (ACID SQLite) — Không mất mát dữ liệu."
     lines.append(f"  • Cơ sở dữ liệu    : {c_green}{db_msg}{c_reset}")
     lines.append(f"{c_bold}{c_cyan}{divider}{c_reset}")
@@ -240,51 +453,9 @@ class DashboardSnapshot:
     top_speakers: list[tuple[str, int]]
     recent_units: list[dict[str, Any]]
     updated_at: str
-
-
-def _truncate_visible(text: str, max_cells: int) -> str:
-    """Safely truncate text to fit max_cells terminal width."""
-    if visible_len(text) <= max_cells:
-        return text
-    limit = max(0, max_cells - 3)
-    curr: list[str] = []
-    width = 0
-    for ch in text:
-        w = char_width(ch)
-        if width + w > limit:
-            break
-        curr.append(ch)
-        width += w
-    return "".join(curr) + "..."
-
-
-def _box_line(
-    content: str,
-    width: int,
-    border_left: str = BOX_LIGHT_VERT,
-    border_right: str = BOX_LIGHT_VERT,
-    c_border: str = "",
-    c_reset: str = "",
-) -> str:
-    """Render a single interior box line with precise Unicode padding."""
-    vis = visible_len(content)
-    pad = max(0, width - 4 - vis)
-    return (
-        f"{c_border}{border_left}{c_reset} {content}{' ' * pad} {c_border}{border_right}{c_reset}"
-    )
-
-
-def _box_divider(
-    width: int,
-    char_left: str = BOX_LIGHT_T_RIGHT,
-    char_mid: str = BOX_LIGHT_HORIZ,
-    char_right: str = BOX_LIGHT_T_LEFT,
-    c_border: str = "",
-    c_reset: str = "",
-) -> str:
-    """Render a horizontal box partition line."""
-    mid = char_mid * max(0, width - 2)
-    return f"{c_border}{char_left}{mid}{char_right}{c_reset}"
+    scene_count: int = 0
+    rel_count: int = 0
+    audit_issues_count: int = 0
 
 
 def _ping_server(
@@ -332,6 +503,20 @@ def query_dashboard_snapshot(
         glossary_count = gloss_row[0] if gloss_row else 0
         tm_row = db.execute("SELECT COUNT(*) FROM tm").fetchone()
         tm_count = tm_row[0] if tm_row else 0
+        scene_row = db.execute("SELECT COUNT(*) FROM scenes").fetchone()
+        scene_count = scene_row[0] if scene_row else 0
+        try:
+            audit_row = db.execute(
+                "SELECT COUNT(*) FROM qa_audit_log WHERE verdict = 'FAIL'"
+            ).fetchone()
+            audit_issues_count = audit_row[0] if audit_row else 0
+        except Exception:
+            audit_issues_count = 0
+        try:
+            rel_row = db.execute("SELECT COUNT(*) FROM relationships").fetchone()
+            rel_count = rel_row[0] if rel_row else 0
+        except Exception:
+            rel_count = 0
 
         top_chars_cur = db.execute(
             "SELECT speaker, COUNT(*) as cnt FROM units "
@@ -387,6 +572,9 @@ def query_dashboard_snapshot(
         top_speakers=top_speakers,
         recent_units=recent_units,
         updated_at=now_str,
+        scene_count=scene_count,
+        rel_count=rel_count,
+        audit_issues_count=audit_issues_count,
     )
 
 
@@ -411,7 +599,6 @@ def render_dashboard_screen(
     c_amber = C_AMBER if use_color else ""
     c_rose = C_ROSE if use_color else ""
     c_indigo = C_INDIGO if use_color else ""
-    c_yellow = C_YELLOW if use_color else ""
 
     lines: list[str] = []
 
@@ -494,9 +681,15 @@ def render_dashboard_screen(
     lore_line = f"Nhân vật chính : {c_indigo}{_truncate_visible(speakers_text, w - 24)}{c_reset}"
     lines.append(_box_line(lore_line, w, c_border=c_border, c_reset=c_reset))
 
+    audit_part = (
+        f"  •  Cờ ảo giác: {c_amber}{snapshot.audit_issues_count:,}{c_reset}"
+        if snapshot.audit_issues_count > 0
+        else ""
+    )
     kb_line = (
-        f"Thuật ngữ glossary : {c_yellow}{snapshot.glossary_count:,}{c_reset} từ  •  "
-        f"Bộ nhớ TM: {snapshot.tm_count:,} mẫu"
+        f"Phân cảnh: {c_cyan}{snapshot.scene_count:,}{c_reset} cảnh  •  "
+        f"Quan hệ: {c_indigo}{snapshot.rel_count:,}{c_reset} cặp  •  "
+        f"Bộ nhớ TM: {snapshot.tm_count:,} mẫu{audit_part}"
     )
     lines.append(_box_line(kb_line, w, c_border=c_border, c_reset=c_reset))
 

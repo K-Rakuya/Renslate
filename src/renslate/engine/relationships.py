@@ -278,12 +278,11 @@ def _apply_pair(
         if prof is not None:
             rule = f"{forms[0]} - {forms[1]}"
             current = prof.pronoun_map.get(tgt)
-            if current is None or existing is not None:
-                if current != rule:
-                    profiles[src] = dataclasses.replace(
-                        prof, pronoun_map={**prof.pronoun_map, tgt: rule}
-                    )
-                    changed.add(src)
+            if (current is None or existing is not None) and current != rule:
+                profiles[src] = dataclasses.replace(
+                    prof, pronoun_map={**prof.pronoun_map, tgt: rule}
+                )
+                changed.add(src)
     return written, changed
 
 

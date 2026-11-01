@@ -209,6 +209,7 @@ def test_large_seq_gap_triggers_scene_boundary() -> None:
 def test_jit_lazy_scene_summarization_in_pipeline(tmp_path: Path) -> None:
     """Verify TranslationPipeline._prepare_batch triggers on-demand scene summarization."""
     from unittest.mock import patch
+
     from renslate.core.models import SceneSummary
     from renslate.engine.translate import TranslationPipeline
 

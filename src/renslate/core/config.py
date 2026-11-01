@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import typing
 from collections.abc import Iterable
@@ -13,7 +14,92 @@ from typing import Any
 
 from renslate.core.errors import ConfigError
 
+__all__ = [
+    "AppConfig",
+    "BatchConfig",
+    "Config",
+    "LLMConfig",
+    "QAConfig",
+    "StyleConfig",
+    "TMConfig",
+]
+
 _LANGUAGE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _env_override(var_names: tuple[str, ...], default: str) -> str:
+    for name in var_names:
+        val = os.getenv(name)
+        if val:
+            return val
+    return default
+
+
+class _EnvField:
+    """Descriptor supporting dynamic environment variable lookup on both class and instance."""
+
+    def __init__(self, names: tuple[str, ...], default: str) -> None:
+        self.names = names
+        self.default = default
+        self.attr = ""
+
+    def __set_name__(self, owner: Any, name: str) -> None:
+        self.attr = f"_{name}"
+
+    def __get__(self, inst: Any, owner: Any = None) -> str:
+        if inst is None:
+            return _env_override(self.names, self.default)
+        val = getattr(inst, self.attr, None)
+        if val is not None:
+            return str(val)
+        return _env_override(self.names, self.default)
+
+
+class _ServerBaseUrlField:
+    """Descriptor computing server root URL (without /v1) on class and instance."""
+
+    def __get__(self, inst: Any, owner: Any = None) -> str:
+        base = AppConfig.llm_api_base_url if inst is None else inst.llm_api_base_url
+        return base.rstrip("/").removesuffix("/v1").rstrip("/")
+
+
+class AppConfig:
+    """Central application configuration registry with environment variable overrides."""
+
+    llm_api_base_url: str = _EnvField(
+        ("RENSLATE_LLM_URL", "RENVI_LLM_URL"), "http://127.0.0.1:8080/v1"
+    )  # type: ignore[assignment]
+    llm_model_name: str = _EnvField(
+        ("RENSLATE_MODEL", "RENVI_LLM_MODEL"), "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
+    )  # type: ignore[assignment]
+    db_path: str = _EnvField(
+        ("RENSLATE_DB_PATH",), "renslate.db"
+    )  # type: ignore[assignment]
+    server_base_url: str = _ServerBaseUrlField()  # type: ignore[assignment]
+
+    def __init__(
+        self,
+        llm_api_base_url: str | None = None,
+        llm_model_name: str | None = None,
+        db_path: str | None = None,
+        timeout_seconds: float = 60.0,
+        max_retries: int = 3,
+        hallucination_check_enabled: bool = True,
+    ) -> None:
+        self._llm_api_base_url = llm_api_base_url
+        self._llm_model_name = llm_model_name
+        self._db_path = db_path
+        self.timeout_seconds = timeout_seconds
+        self.max_retries = max_retries
+        self.hallucination_check_enabled = hallucination_check_enabled
+
+    @property
+    def server_url(self) -> str:
+        return self.llm_api_base_url.rstrip("/").removesuffix("/v1").rstrip("/")
+
+    @classmethod
+    def get_server_base_url(cls) -> str:
+        return cls.llm_api_base_url.rstrip("/").removesuffix("/v1").rstrip("/")
 
 
 def _bounded(default: Any, minimum: float | None = None, maximum: float | None = None) -> Any:
@@ -22,8 +108,8 @@ def _bounded(default: Any, minimum: float | None = None, maximum: float | None =
 
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
-    base_url: str = "http://127.0.0.1:8080/v1"
-    model: str = "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
+    base_url: str = field(default_factory=lambda: AppConfig.llm_api_base_url)
+    model: str = field(default_factory=lambda: AppConfig.llm_model_name)
     n_ctx: int = _bounded(6144, 1024)
     temperature: float = _bounded(0.25, 0.0, 2.0)
     min_p: float = _bounded(0.0, 0.0, 1.0)

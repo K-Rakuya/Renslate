@@ -204,9 +204,21 @@ def _cmd_translate(args: argparse.Namespace) -> int:
     def _progress(current: int, total: int, msg: str) -> None:
         print(f"[{current}/{total}] {msg}")
 
+    guard_enabled = not getattr(args, "no_guard", False)
+    guard = None
+    if guard_enabled:
+        try:
+            from renslate.engine.hallucination import HallucinationGuard
+
+            guard = HallucinationGuard(config=config.llm)
+        except Exception:
+            pass
+
     with project.open_db() as database:
-        pipeline = TranslationPipeline(project, database, config)
+        pipeline = TranslationPipeline(project, database, config, hallucination_guard=guard)
         print(f"Bắt đầu dịch bằng backend {config.llm.base_url} ({config.llm.model})...")
+        if guard:
+            print("  [BẢO VỆ] Continuous LLM Hallucination Guard đang hoạt động.")
         stats = pipeline.run(
             limit=args.limit,
             include_failed=args.retry_failed,
@@ -261,6 +273,22 @@ def _cmd_qa(args: argparse.Namespace) -> int:
                         f"  [{issue.severity.upper()}] {issue.uid} ({issue.code}): {issue.message}",
                         file=sys.stderr if issue.severity == "error" else sys.stdout,
                     )
+
+        try:
+            audit_logs = database.execute(
+                "SELECT uid, issue_type, explanation, suggested_correction "
+                "FROM qa_audit_log WHERE verdict = 'FAIL' ORDER BY created_at DESC LIMIT 50"
+            ).fetchall()
+            if audit_logs:
+                print(
+                    f"\nPhát hiện {len(audit_logs)} cảnh báo từ LLM Hallucination Guard (Audit Log):"
+                )
+                for a_uid, a_type, a_exp, a_sugg in audit_logs:
+                    sugg_str = f" -> Gợi ý: {a_sugg}" if a_sugg else ""
+                    print(f"  [HALLUCINATION] {a_uid} ({a_type}): {a_exp}{sugg_str}")
+                issues_found += len(audit_logs)
+        except Exception:
+            pass
 
     if issues_found == 0:
         print("Tất cả bản dịch đều vượt qua kiểm tra chất lượng (QA pass).")
@@ -477,6 +505,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         auto_apply=args.auto_apply,
         plain=getattr(args, "plain", False),
         bootstrap=bootstrap_arg,
+        guard=not getattr(args, "no_guard", False),
     )
 
 
@@ -652,6 +681,11 @@ def _build_parser() -> argparse.ArgumentParser:
     translate.add_argument(
         "--retry-failed", action="store_true", help="thử dịch lại các dòng từng bị lỗi"
     )
+    translate.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
+    )
 
     add("qa", _cmd_qa, "kiểm tra chất lượng và phát hiện lỗi bản dịch")
 
@@ -786,6 +820,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "--no-bootstrap",
             action="store_true",
             help="bỏ qua bước LLM bootstrapping cho nhân vật và glossary",
+        )
+        sub.add_argument(
+            "--no-guard",
+            action="store_true",
+            help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
         )
 
     run_cmd = add("run", _cmd_run, "chạy dịch tự động liên tục với TUI dashboard")

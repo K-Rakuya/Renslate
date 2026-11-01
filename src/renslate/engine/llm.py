@@ -17,7 +17,7 @@ import urllib.request
 from collections.abc import Sequence
 from typing import Any
 
-from renslate.core.config import LLMConfig
+from renslate.core.config import AppConfig, LLMConfig
 from renslate.core.errors import LLMError
 
 _LOG = logging.getLogger("renslate.llm")
@@ -371,8 +371,9 @@ class LLMClient:
         self.config = config
         self.endpoint = f"{config.base_url.rstrip('/')}/chat/completions"
         parsed = urllib.parse.urlsplit(self.endpoint)
+        default_host = urllib.parse.urlsplit(AppConfig.llm_api_base_url).hostname or "127.0.0.1"
         self._scheme = parsed.scheme.lower() or "http"
-        self._host = parsed.hostname or "127.0.0.1"
+        self._host = parsed.hostname or default_host
         self._port = parsed.port or (443 if self._scheme == "https" else 80)
         self._path = parsed.path or "/"
         if parsed.query:

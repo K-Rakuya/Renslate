@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from renslate.core.config import Config
-from renslate.core.db import Database
 from renslate.core.models import (
     CharacterProfile,
     SceneMacroContext,

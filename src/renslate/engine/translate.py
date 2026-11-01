@@ -34,6 +34,10 @@ from renslate.engine.context import (
 )
 from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
+from renslate.engine.hallucination import (
+    HallucinationGuard,
+    persist_hallucination_audit,
+)
 from renslate.engine.knowledge import refresh_character_genders
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation
@@ -423,6 +427,7 @@ class TranslationPipeline:
         config: Config,
         graph: RelationshipGraph | None = None,
         resolver: InterlocutorResolver | None = None,
+        hallucination_guard: HallucinationGuard | None = None,
     ) -> None:
         self.project = project
         self.db = db
@@ -463,6 +468,12 @@ class TranslationPipeline:
         self.resolver = resolver if resolver is not None else InterlocutorResolver()
         self._current_scene_label: str | None = None
         self._current_prepared: _PreparedBatch | None = None
+
+        # Initialize Continuous LLM Hallucination Guard
+        self.guard = hallucination_guard
+        if self.guard is None and getattr(config, "hallucination_check_enabled", False):
+            self.guard = HallucinationGuard(config=config.llm, llm_client=self.llm)
+        self.hallucination_guard = self.guard
 
         # Custom style guide if present
         style_guide = ""
@@ -1075,6 +1086,46 @@ class TranslationPipeline:
             status = Status.QA_FLAGGED if flags else Status.TRANSLATED
             unit_updates.append((u, final_target, flags, status))
             prev_u = u
+
+        if self.guard is not None and unit_updates:
+            from dataclasses import replace
+
+            candidate_units = [replace(u, target=tgt) for u, tgt, _, _ in unit_updates]
+            guard_results = self.guard.scan_batch(candidate_units, context_window=user_prompt)
+            persist_hallucination_audit(self.db, guard_results)
+
+            hal_by_id = {r.unit_id: r for r in guard_results if r.has_hallucination}
+            if hal_by_id:
+                filtered_updates: list[tuple[Unit, str, tuple[str, ...], Status]] = []
+                for u, tgt, flags, status in unit_updates:
+                    r = hal_by_id.get(u.uid)
+                    if r is not None and r.confidence >= 0.70:
+                        _LOG.info(
+                            "Dòng %s bị HallucinationGuard gắn cờ %s (độ tin cậy %.2f): %s",
+                            u.uid,
+                            r.category,
+                            r.confidence,
+                            r.explanation,
+                        )
+                        detail = r.explanation
+                        if r.suggested_correction:
+                            detail = f"{detail} (Gợi ý: {r.suggested_correction})"
+                        failed_units.append(
+                            UnitFailure(
+                                u,
+                                r.category or "hallucination",
+                                detail,
+                                tgt,
+                            )
+                        )
+                    else:
+                        if r is not None:
+                            flags = tuple(
+                                sorted(set(flags) | {f"qa_hallucination_{r.category.lower()}"})
+                            )
+                            status = Status.QA_FLAGGED
+                        filtered_updates.append((u, tgt, flags, status))
+                unit_updates = filtered_updates
 
         if unit_updates:
             with self.db.transaction():

@@ -304,7 +304,7 @@ def test_translation_prompt_uses_bootstrapped_pair_rule(project: Project) -> Non
     def fake_complete(system: str, user: str, **kw: Any) -> tuple[dict[str, str], int, int]:
         prompts.append(user)
         schema = kw.get("schema") or {}
-        return ({uid: "Tạm được." for uid in schema.get("properties", {})}, 10, 10)
+        return (dict.fromkeys(schema.get("properties", {}), "Tạm được."), 10, 10)
 
     with (
         project.open_db() as db,

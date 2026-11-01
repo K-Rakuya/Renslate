@@ -38,7 +38,7 @@ def test_check_font_vietnamese_support_missing_file(tmp_path: Path) -> None:
 def test_check_font_vietnamese_support_corrupt_file(tmp_path: Path) -> None:
     corrupt = tmp_path / "corrupt.ttf"
     corrupt.write_bytes(b"not a real true type font data")
-    supported, missing_count, missing_chars = check_font_vietnamese_support(corrupt)
+    supported, missing_count, _missing_chars = check_font_vietnamese_support(corrupt)
     assert not supported
     assert missing_count > 0
 

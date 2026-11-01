@@ -148,3 +148,61 @@ def test_run_live_dashboard_interactive_mocked(sample_project: Project) -> None:
     ):
         code = run_live_dashboard(sample_project, interval=0.1, once=False, plain=True)
         assert code == 0
+
+
+def test_live_dashboard_in_place_update_and_cursor_lifecycle(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from renslate.ui.dashboard import DashboardState, LiveDashboard
+
+    st = DashboardState(
+        model_name="Qwen-Test",
+        total_units=100,
+        completed_units=20,
+        character_count=5,
+        relation_count=10,
+        scene_count=2,
+        recent_speaker="Eileen",
+        recent_target="Xin chào buổi sáng!",
+    )
+    dash = LiveDashboard(st)
+
+    with (
+        patch("sys.stdout.isatty", return_value=True),
+        patch("renslate.ui.dashboard.IS_TTY", True),
+    ):
+        dash.update(width=80, plain=False)
+        captured = capsys.readouterr().out
+        assert "\033[?25l" in captured
+        assert "Renslate Autonomous Engine" in captured
+        assert "5 nhân vật" in captured
+        assert "10 quan hệ" in captured
+        assert "Eileen" in captured
+        assert "Xin chào buổi sáng!" in captured
+
+        st.completed_units = 50
+        dash.update(width=80, plain=False)
+        captured2 = capsys.readouterr().out
+        assert "\033[" in captured2
+        assert "F\033[J" in captured2
+        assert "50/100" in captured2
+
+        dash.stop()
+        captured3 = capsys.readouterr().out
+        assert "\033[?25h" in captured3
+
+
+def test_live_dashboard_context_manager_safety(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from renslate.ui.dashboard import DashboardState, LiveDashboard
+
+    with (
+        patch("sys.stdout.isatty", return_value=True),
+        patch("renslate.ui.dashboard.IS_TTY", True),
+    ):
+        with LiveDashboard(DashboardState()) as dash:
+            dash.update(width=78, plain=False)
+        out = capsys.readouterr().out
+        assert "\033[?25l" in out
+        assert "\033[?25h" in out
