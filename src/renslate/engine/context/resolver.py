@@ -20,6 +20,7 @@ __all__ = [
     "_MEDIAL_VOCATIVE_RE",
     "_NON_DIALOGUE_TAGS",
     "_PROTAGONIST_TAGS",
+    "_RECIPROCAL_PRONOUN_PAIRS",
     "_TRAILING_VOCATIVE_RE",
     "InterlocutorResolver",
     "ResolvedInterlocutor",
@@ -27,6 +28,7 @@ __all__ = [
     "_extract_unit_file",
     "_is_scene_boundary",
     "_strip_outer_quotes",
+    "invert_reciprocal_pronoun_rule",
 ]
 
 _NON_DIALOGUE_TAGS = frozenset(
@@ -96,6 +98,87 @@ _KINSHIP_WORDS = frozenset(
 _PROTAGONIST_TAGS = frozenset(
     {"mc", "player", "hero", "protag", "protagonist", "main", "you", "me"}
 )
+
+_RECIPROCAL_PRONOUN_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("anh", "em"), ("em", "anh"),
+        ("chị", "em"), ("em", "chị"),
+        ("bố", "con"), ("con", "bố"),
+        ("cha", "con"), ("con", "cha"),
+        ("mẹ", "con"), ("con", "mẹ"),
+        ("ba", "con"), ("con", "ba"),
+        ("má", "con"), ("con", "má"),
+        ("ông", "cháu"), ("cháu", "ông"),
+        ("bà", "cháu"), ("cháu", "bà"),
+        ("chú", "cháu"), ("cháu", "chú"),
+        ("cô", "cháu"), ("cháu", "cô"),
+        ("dì", "cháu"), ("cháu", "dì"),
+        ("bác", "cháu"), ("cháu", "bác"),
+        ("thầy", "trò"), ("trò", "thầy"),
+        ("thầy", "em"), ("em", "thầy"),
+        ("thầy", "con"), ("con", "thầy"),
+        ("sư phụ", "đồ nhi"), ("đồ nhi", "sư phụ"),
+        ("sư phụ", "đệ tử"), ("đệ tử", "sư phụ"),
+        ("sư phụ", "con"), ("con", "sư phụ"),
+        ("tiền bối", "hậu bối"), ("hậu bối", "tiền bối"),
+        ("huynh", "đệ"), ("đệ", "huynh"),
+        ("huynh", "muội"), ("muội", "huynh"),
+        ("tỷ", "muội"), ("muội", "tỷ"),
+        ("tỷ", "đệ"), ("đệ", "tỷ"),
+        ("chàng", "nàng"), ("nàng", "chàng"),
+        ("ta", "con"), ("con", "ta"),
+    }
+)
+
+
+def invert_reciprocal_pronoun_rule(rule: str) -> str | None:
+    rule_clean = rule.strip()
+    if " - " in rule_clean and not rule_clean.startswith("xưng"):
+        pts = [p.strip() for p in rule_clean.split(" - ", 1)]
+        if len(pts) == 2:
+            key = (pts[0].lower(), pts[1].lower())
+            if key in _RECIPROCAL_PRONOUN_PAIRS:
+                return f"{pts[1]} - {pts[0]}"
+    return None
+
+_FEMALE_KINSHIP: frozenset[str] = frozenset(
+    {"mother", "mom", "mama", "mẹ", "má", "sister", "chị", "em gái", "aunt", "cô", "dì", "bà", "con gái", "cháu gái"}
+)
+_MALE_KINSHIP: frozenset[str] = frozenset(
+    {"father", "dad", "papa", "cha", "bố", "ba", "brother", "anh trai", "uncle", "chú", "bác", "ông", "con trai", "cháu trai"}
+)
+
+_FEMININE_NAMES = re.compile(
+    r"^(?:charlotte|alice|eileen|diana|evelyn|luna|iris|emily|sarah|mary|anna|clara|lucy|sophia|"
+    r"olivia|emma|chloe|mia|lily|grace|zoe|eva|elena|stella|amber|ruby|rose|victoria|valerie|karyn|zuri|"
+    r"kaede|tomoe|yui|aoi|akane|"
+    r"[a-z]*(?:ko|ka|na|ri|mi|ne|tsu|ki|yu))$",
+    re.IGNORECASE,
+)
+_MASCULINE_NAMES = re.compile(
+    r"^(?:jin|orson|kevin|john|david|michael|alex|mike|bob|tom|jack|george|arthur|"
+    r"[a-z]*(?:taro|ro|shi|to|ya|suke))$",
+    re.IGNORECASE,
+)
+
+
+def _gender_conflict(cand_term: str, target_name: str, target_tag: str) -> bool:
+    cand_l = cand_term.lower()
+    name_l = target_name.lower()
+    tag_l = target_tag.lower()
+    is_masc = bool(
+        re.search(r"\b(?:he|him|his|boy|man|male|prince|king|lord|sir|mr|father|brother|uncle|son|nam|ông|chú|bác|anh|bố|cha|chàng|con trai|cháu trai)\b", name_l)
+        or _MASCULINE_NAMES.match(name_l)
+        or _MASCULINE_NAMES.match(tag_l)
+    )
+    is_fem = bool(
+        re.search(r"\b(?:she|her|girl|woman|female|princess|queen|lady|miss|mrs|ms|mother|sister|aunt|daughter|nữ|bà|cô|dì|chị|mẹ|nàng|con gái|cháu gái)\b", name_l)
+        or _FEMININE_NAMES.match(name_l)
+        or _FEMININE_NAMES.match(tag_l)
+    )
+    if cand_l in _FEMALE_KINSHIP and is_masc and not is_fem:
+        return True
+    return bool(cand_l in _MALE_KINSHIP and is_fem and not is_masc)
 
 
 def _strip_outer_quotes(text: str) -> str:
@@ -436,10 +519,6 @@ class InterlocutorResolver:
         candidates = [a for a in pool if a.lower() != spk_lower]
         if not candidates:
             return None
-        if len(candidates) == 1:
-            target = candidates[0]
-            self._register_alias(cand, target, spk)
-            return target
 
         prev_spk = prev_unit.speaker.lower() if prev_unit and prev_unit.speaker else None
 
@@ -450,12 +529,15 @@ class InterlocutorResolver:
             c_lower = c.lower()
 
             disp_words = set(re.findall(r"[\wÀ-ỹ]+", disp_lower))
+            has_kinship_evidence = False
             if cand in disp_words or cand in disp_lower:
                 score += 50.0
+                has_kinship_evidence = True
 
             for kw in _KINSHIP_WORDS:
                 if kw in disp_words:
                     score += 20.0
+                    has_kinship_evidence = True
                     break
 
             name_tokens = {c_lower} | {
@@ -466,29 +548,48 @@ class InterlocutorResolver:
                     score -= 100.0
                     break
 
-            if prev_spk and c_lower == prev_spk:
+            if has_kinship_evidence and prev_spk and c_lower == prev_spk:
                 score += 10.0
-                if re.search(r"\b(?:him|he|his|her|she|hers)\b", src, re.I):
-                    score += 15.0
 
             return score
 
+        if len(candidates) == 1:
+            target = candidates[0]
+            disp = (known_names.get(target) if known_names else None) or target
+            if _gender_conflict(cand, disp, target):
+                return None
+            if _score(target) <= 0.0:
+                return None
+            self._register_alias(cand, target, spk)
+            return target
+
         scored = [(c, _score(c)) for c in candidates]
         scored.sort(key=lambda x: x[1], reverse=True)
+        if scored[0][1] <= 0.0:
+            return None
         if scored[0][1] > scored[1][1]:
             target = scored[0][0]
+            disp = (known_names.get(target) if known_names else None) or target
+            if _gender_conflict(cand, disp, target):
+                return None
             self._register_alias(cand, target, spk)
             return target
 
         if prev_spk:
-            for c, _ in scored:
-                if c.lower() == prev_spk:
+            for c, s in scored:
+                if c.lower() == prev_spk and s > 0.0:
+                    disp = (known_names.get(c) if known_names else None) or c
+                    if not _gender_conflict(cand, disp, c):
+                        self._register_alias(cand, c, spk)
+                        return c
+
+        for c, s in scored:
+            if s > 0.0:
+                disp = (known_names.get(c) if known_names else None) or c
+                if not _gender_conflict(cand, disp, c) and (cand in disp.lower() or c.lower() == cand):
                     self._register_alias(cand, c, spk)
                     return c
-
-        target = scored[0][0]
-        self._register_alias(cand, target, spk)
-        return target
+        return None
 
     def resolve(
         self,
@@ -627,24 +728,17 @@ class InterlocutorResolver:
                 and not prev_is_non_dialogue
                 and (not allowed_targets or prev_spk.lower() in allowed_targets)
             ):
-                    # Dynamically register any vocative titles used in current unit to prev_spk
-                    for s in sentences:
-                        m_t = _TRAILING_VOCATIVE_RE.search(s)
-                        if m_t:
-                            c = self._clean_cand(m_t.group(1))
-                            if c in _KINSHIP_WORDS:
-                                self._register_alias(c, prev_spk, spk)
-                    self._prev_unit = unit
-                    self._prev_speaker = spk
-                    self._last_listener = prev_spk
-                    self._remember_turn(spk, unit)
-                    return ResolvedInterlocutor(
-                        speaker=spk,
-                        listener=prev_spk,
-                        is_monologue=False,
-                        detected_emotion=emotion,
-                        resolution_method="turn_taking",
-                    )
+                self._prev_unit = unit
+                self._prev_speaker = spk
+                self._last_listener = prev_spk
+                self._remember_turn(spk, unit)
+                return ResolvedInterlocutor(
+                    speaker=spk,
+                    listener=prev_spk,
+                    is_monologue=False,
+                    detected_emotion=emotion,
+                    resolution_method="turn_taking",
+                )
 
         # 5. Fallbacks: narration between turns, same-speaker runs, two-person scenes
         fb_listener, fb_method = self._fallback_listener(
@@ -739,6 +833,9 @@ class InterlocutorResolver:
             if p_rule_rev and " - " in p_rule_rev and not p_rule_rev.startswith("xưng"):
                 parts = [p.strip() for p in p_rule_rev.split(" - ", 1)]
                 if len(parts) == 2:
-                    return parts[1], parts[0]
+                    p0 = parts[0].strip().lower()
+                    p1 = parts[1].strip().lower()
+                    if (p0, p1) in _RECIPROCAL_PRONOUN_PAIRS:
+                        return parts[1], parts[0]
 
         return None

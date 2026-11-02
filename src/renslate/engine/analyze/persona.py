@@ -69,56 +69,46 @@ PERSONA_SYSTEM_PROMPT = (
     "câu thoại mẫu thực tế để phục vụ dịch thuật sang tiếng Việt chuẩn xác và tự nhiên.\n\n"
     "NGUYÊN TẮC BẮT BUỘC:\n"
     "- Bám sát câu thoại, tương tác 2 chiều và ngữ cảnh kịch bản đã cung cấp. Tuyệt đối KHÔNG "
-    "suy diễn hoặc gán ép các trope anime xa lạ nếu câu thoại không thể hiện.\n"
+    "suy diễn hoặc gán ép các khuôn mẫu xa lạ nếu câu thoại không thể hiện.\n"
     "- Nếu kịch bản có ghi nhận chứng cứ giới tính (Nam/Nữ), bắt buộc tuân theo. Nếu không đủ căn "
     "cứ, hãy trả về 'unknown' thay vì đoán mò.\n"
-    "- Với pronoun_map: Bắt buộc dùng đúng tag của đối tượng (đặc biệt là tag của Nhân vật chính "
+    "- Với pronoun_map: Bắt buộc dùng đúng tag của đối tượng tương tác (đặc biệt là tag của Nhân vật chính "
     "MC được chỉ định) làm key xưng hô. Dựa vào các cặp thoại 2 chiều thực tế để xác định cặp "
-    "xưng hô đối ứng tiếng Việt chính xác tuyệt đối (VD: 'mc': 'anh - em', 'tôi - cậu', "
-    "'cháu - chú', 'ta - ngươi').\n\n"
+    "xưng hô đối ứng tiếng Việt chính xác tuyệt đối (ví dụ: 'mc': 'anh - em', 'tôi - cậu', "
+    "'cháu - chú', 'ta - ngươi'). Tuyệt đối không dùng các key trừu tượng không có trong kịch bản.\n\n"
     "Với mỗi nhân vật, hãy xác định đầy đủ các trường sau:\n"
-    "- display_name_vi: Tên tiếng Việt tự nhiên (danh từ chung như 'Guard', 'Mercenary' "
-    "dịch là 'Lính gác', 'Lính đánh thuê'; tên riêng người như 'Charlotte', 'Alice' giữ nguyên).\n"
+    "- display_name_vi: Tên tiếng Việt tự nhiên (danh từ chung chỉ nghề nghiệp/chức danh như 'Guard', 'Mercenary' "
+    "dịch nghĩa tự nhiên; tên riêng nước ngoài giữ nguyên).\n"
     "- gender: 'female', 'male', hoặc 'unknown'.\n"
-    "- role: Vai trò cốt truyện ngắn gọn (VD: 'Nữ hiệp sĩ kiêu hãnh', 'Nhân vật chính').\n"
-    "- archetype: Hình mẫu tâm lý chuẩn visual novel: "
-    "'tsundere', 'kuudere', 'dandere', 'elder_mentor', 'loyal_knight', 'rebel_warrior', "
-    "'inquisitive_apprentice', 'childhood_friend', 'noble_lady', 'genki_girl', "
-    "'cunning_villain', 'protagonist', 'narrator', 'supporting_cast'...\n"
-    "- personality_traits: Mảng 2-4 nét tính cách chủ đạo "
-    "(VD: ['kiêu hãnh', 'khẩu xà tâm phật', 'dễ bối rối']).\n"
-    "- tone_and_voice: Mô tả giọng điệu, âm vực, và phong thái đối thoại "
-    "(VD: 'Sắc sảo, đanh đá nhưng lắp bắp khi bối rối; âm vực cao').\n"
-    "- socioeconomic_status: Địa vị / giai cấp xã hội (VD: 'Tiểu thư quý tộc', "
-    "'Đại pháp sư hoàng gia', 'Thường dân', 'Hiệp sĩ lang bạt').\n"
-    "- speech_style: Phong cách ăn nói tổng quát bằng tiếng Việt "
-    "(VD: 'Kiêu kỳ, đanh thép, ngập ngừng khi xúc động').\n"
-    "- sample_dialogue: Mảng gồm 2-3 câu thoại tiêu biểu nhất của nhân vật được chọn từ "
-    "các câu thoại mẫu đã cung cấp.\n"
-    "- pronoun_map: Quy tắc xưng hô đối ứng tiếng Việt (VD: 'mc': 'tôi - cậu', "
-    "'to_elder': 'xưng con, gọi ngài/bác', 'to_peer': 'xưng tôi, gọi cậu', "
-    "'to_junior': 'xưng ta, gọi ngươi', 'to_enemy': 'xưng ta, gọi ngươi').\n\n"
-    "Trả về DUY NHẤT một đối tượng JSON có khóa là các tag nhân vật:\n"
+    "- role: Vai trò cốt truyện ngắn gọn (ví dụ: 'Hiệp sĩ', 'Nhân vật chính', 'Thương nhân').\n"
+    "- archetype: Hình mẫu tâm lý nhân vật chuẩn xác (ví dụ: 'tsundere', 'kuudere', 'dandere', 'elder_mentor', "
+    "'loyal_knight', 'rebel_warrior', 'inquisitive_apprentice', 'childhood_friend', 'noble_lady', "
+    "'cunning_villain', 'protagonist', 'narrator', 'supporting_cast' hoặc 'unknown').\n"
+    "- personality_traits: Mảng 2-4 nét tính cách chủ đạo dựa trên bằng chứng kịch bản.\n"
+    "- tone_and_voice: Mô tả giọng điệu, âm vực, và phong thái đối thoại thể hiện trong lời thoại.\n"
+    "- socioeconomic_status: Địa vị hoặc tầng lớp xã hội thể hiện trong bối cảnh.\n"
+    "- speech_style: Phong cách ăn nói tổng quát bằng tiếng Việt.\n"
+    "- sample_dialogue: Mảng gồm 2-3 câu thoại tiêu biểu nhất được trích dẫn NGUYÊN VĂN từ các câu thoại mẫu "
+    "đã cung cấp trong kịch bản. Tuyệt đối không tự bịa đặt câu thoại.\n"
+    "- pronoun_map: Quy tắc xưng hô đối ứng tiếng Việt với các bạn thoại thực tế (key là tag bạn thoại, "
+    "value có dạng 'xưng - gọi').\n\n"
+    "Trả về DUY NHẤT một đối tượng JSON có khóa là các tag nhân vật được yêu cầu:\n"
     "{\n"
-    '  "tag_name": {\n'
-    '    "display_name_vi": "Charlotte",\n'
-    '    "gender": "female",\n'
-    '    "role": "Tiểu thư quý tộc / Nữ chính",\n'
-    '    "archetype": "tsundere",\n'
-    '    "personality_traits": ["kiêu hãnh", "khẩu xà tâm phật", "dễ bối rối"],\n'
-    '    "tone_and_voice": "Sắc sảo, gay gắt bề ngoài nhưng dễ ngập ngừng, bối rối khi xúc động",\n'
-    '    "socioeconomic_status": "Tiểu thư quý tộc cấp cao",\n'
-    '    "speech_style": "Kiêu kỳ, hay mỉa mai, ngập ngừng khi xúc động",\n'
+    '  "<character_tag>": {\n'
+    '    "display_name_vi": "<tên hiển thị tiếng Việt>",\n'
+    '    "gender": "female | male | unknown",\n'
+    '    "role": "<vai trò cốt truyện>",\n'
+    '    "archetype": "<hình mẫu tâm lý>",\n'
+    '    "personality_traits": ["<nét tính cách 1>", "<nét tính cách 2>"],\n'
+    '    "tone_and_voice": "<mô tả phong thái, ngữ điệu đối thoại>",\n'
+    '    "socioeconomic_status": "<địa vị / tầng lớp xã hội>",\n'
+    '    "speech_style": "<phong cách đối thoại tiếng Việt>",\n'
     '    "sample_dialogue": [\n'
-    '      "B-Baka! It\'s not like I waited for you or anything...!",\n'
-    '      "W-What are you staring at?! Turn around, idiot!"\n'
+    '      "<câu thoại trích dẫn nguyên văn 1 từ dữ liệu mẫu đã cung cấp>",\n'
+    '      "<câu thoại trích dẫn nguyên văn 2 từ dữ liệu mẫu đã cung cấp>"\n'
     "    ],\n"
     '    "pronoun_map": {\n'
-    '      "mc": "tôi - cậu",\n'
-    '      "to_elder": "xưng cháu/con, gọi bác/ngài",\n'
-    '      "to_peer": "xưng tôi, gọi cậu",\n'
-    '      "to_junior": "xưng ta, gọi ngươi",\n'
-    '      "to_enemy": "xưng ta, gọi ngươi"\n'
+    '      "<partner_tag>": "<xưng> - <gọi>"\n'
     "    }\n"
     "  }\n"
     "}\n"
@@ -287,6 +277,22 @@ def resolve_pronoun_pair_from_relationship(
     return ("tôi", lis)
 
 
+_ALLOWED_ROLE_MODIFIERS = frozenset(
+    {
+        "the", "a", "an", "and", "of", "to", "elder", "older", "younger", "little",
+        "big", "first", "second", "loving", "kind", "beloved", "gentle", "strict",
+        "wise", "honored", "honourable", "head", "chief", "royal", "personal",
+        "loyal", "trusted", "devoted", "step", "foster", "adoptive", "biological",
+        "sworn", "sole", "only", "favorite", "favourite", "childhood", "s",
+        "người", "đứa", "già", "nhỏ", "ruột", "kế", "nuôi", "đẻ", "hiền", "cả",
+        "hai", "ba", "tư", "chính", "thân", "thân sinh", "yêu", "quý", "yêu quý",
+        "hiền từ", "nghiêm nghị", "tổng", "trưởng", "hoàng gia", "trung thành",
+        "tận tuỵ", "tận tụy", "kết nghĩa", "duy nhất", "đích tôn", "chưa cưới", "sắp cưới",
+        "dinh", "thự", "thời", "thơ", "ấu", "không", "đội", "trời", "chung",
+    }
+)
+
+
 def infer_semantic_relationship(
     tag: str,
     tc: dict[str, Any],
@@ -327,76 +333,158 @@ def infer_semantic_relationship(
     text_self = _combine_text(tag, tc)
     text_partner = _combine_text(partner_tag, partner_info)
 
-    # 1. Family Elder
+    def _is_mentioned_in(t: str, disp: str, text: str) -> bool:
+        if t and len(t) >= 2 and re.search(rf"\b{re.escape(t.lower())}\b", text):
+            return True
+        return bool(disp and len(disp) >= 2 and re.search(rf"\b{re.escape(disp.lower())}\b", text))
+
+    def _is_external_or_narrative(text: str, mc_cues: set[str]) -> bool:
+        all_rel_cues = (
+            r"father|mother|parent|dad|mom|daughter|son|child|cha|mẹ|bố|con|"
+            r"sister|brother|chị|anh|em|wife|husband|vợ|chồng|lover|người yêu|"
+            r"boyfriend|girlfriend|fiancee|fiance|master|mentor|teacher|sensei|sư phụ|thầy|"
+            r"servant|maid|butler|apprentice|disciple|student|học trò|đồ nhi|đệ tử|"
+            r"friend|bạn thân|thanh mai trúc mã|rival|enemy|đối thủ|kẻ thù"
+        )
+        m = re.search(
+            rf"\b(?:{all_rel_cues})(?:\s+\w+){{0,2}}\s+(?:of|to|của)\s+([^,.;\n]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            target_phrase = m.group(1).strip().lower()
+            if not any(re.search(rf"\b{re.escape(k)}\b", target_phrase) for k in mc_cues):
+                return True
+
+        m_poss = re.search(
+            rf"\b([A-Za-zÀ-ỹ0-9_]+)(?:'s|\u2019s)\s+(?:\w+\s+)*(?:{all_rel_cues})\b",
+            text,
+            re.IGNORECASE,
+        )
+        if m_poss:
+            possessor = m_poss.group(1).strip().lower()
+            if not any(re.search(rf"\b{re.escape(k)}\b", possessor) for k in mc_cues):
+                return True
+
+        if re.search(
+            rf"\b(?:his|her|their)\s+(?:\w+\s+)*(?:{all_rel_cues})\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+
+        return bool(
+            re.search(
+                r"\b(?:grieving|mourning|late|missing|lost|searching\s+for|devoted\s+(?:husband|wife|father|mother)|(?:husband|wife|father|mother|brother|sister)\s+and)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    def _is_bound_relation(
+        source_tag_str: str,
+        source_info: dict[str, Any],
+        target_tag_str: str,
+        target_info: dict[str, Any],
+        cues: Sequence[str],
+        *,
+        is_target_protagonist: bool,
+    ) -> bool:
+        text = _combine_text(source_tag_str, source_info)
+        has_any_cue = any(re.search(rf"\b{c}\b", text, re.I) for c in cues)
+        if not has_any_cue:
+            return False
+
+        target_disp = str(target_info.get("display_name", ""))
+        if _is_mentioned_in(target_tag_str, target_disp, text):
+            return True
+
+        if not is_target_protagonist:
+            return False
+
+        target_names = {target_tag_str.lower(), target_disp.lower()} - {"", "unknown"}
+        mc_cues = {"nhân vật chính", "protagonist", "hero", "player", "mc", "main character"} | target_names
+        cues_re = "|".join(re.escape(c) for c in cues)
+        mc_re = "|".join(re.escape(m) for m in mc_cues)
+
+        if re.search(rf"\b(?:{cues_re})(?:\s+\w+){{0,2}}\s+(?:of|to|của)\s+(?:the\s+)?(?:{mc_re})\b", text, re.I):
+            return True
+        if re.search(rf"\b(?:{mc_re})(?:'s|\u2019s| của)?\s+(?:\w+\s+){{0,2}}(?:{cues_re})\b", text, re.I):
+            return True
+
+        if _is_external_or_narrative(text, mc_cues):
+            return False
+
+        source_name_tokens = {source_tag_str.lower()} | set(
+            re.findall(r"[\wÀ-ỹ]+", str(source_info.get("display_name", "")).lower())
+        )
+        allowed_words = _ALLOWED_ROLE_MODIFIERS | mc_cues | source_name_tokens
+        role_self = str(source_info.get("role", "")).strip().lower()
+        disp_self = str(source_info.get("display_name", "")).strip().lower()
+        for candidate_str in (source_tag_str.lower(), role_self, disp_self):
+            clean = re.sub(r"[()]", " / ", candidate_str).strip()
+            parts = [p.strip() for p in re.split(r"[/,\u2013\u2014|]", clean) if p.strip()]
+            for p in parts:
+                if any(re.search(rf"\b{c}\b", p, re.I) for c in cues):
+                    p_clean = p
+                    for c in sorted(cues, key=len, reverse=True):
+                        p_clean = re.sub(rf"\b{re.escape(c)}\b", " ", p_clean, flags=re.I)
+                    remaining = {w.strip().lower() for w in re.findall(r"[\wÀ-ỹ]+", p_clean) if w.strip()}
+                    if remaining.issubset(allowed_words):
+                        return True
+
+        return False
+
+    # 1. Family Elder & Junior
     elder_cues = (
         "mother", "mom", "mama", "father", "dad", "papa", "parent", "uncle", "aunt",
         "grandpa", "grandma", "grandfather", "grandmother", "mẹ", "cha", "bố", "bác",
         "chú", "cô", "dì", "ông", "bà",
     )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in elder_cues) and (
-        is_mc or not any(re.search(rf"\b{c}\b", text_self) for c in elder_cues)
-    ):
+    child_cues = (
+        "daughter", "son", "child", "children", "con gái", "con trai", "đứa con", "cháu gái", "cháu trai",
+    )
+    partner_is_elder = _is_bound_relation(partner_tag, partner_info, tag, tc, elder_cues, is_target_protagonist=is_mc)
+    self_is_elder = _is_bound_relation(tag, tc, partner_tag, partner_info, elder_cues, is_target_protagonist=partner_is_mc)
+    partner_is_child = _is_bound_relation(partner_tag, partner_info, tag, tc, child_cues, is_target_protagonist=is_mc)
+    self_is_child = _is_bound_relation(tag, tc, partner_tag, partner_info, child_cues, is_target_protagonist=partner_is_mc)
+
+    if (partner_is_elder or self_is_child) and (is_mc or (not self_is_elder and not partner_is_child)):
         return (RelationshipKind.FAMILY_ELDER, False)
-    if any(re.search(rf"\b{c}\b", text_self) for c in elder_cues) and (
-        partner_is_mc or not any(re.search(rf"\b{c}\b", text_partner) for c in elder_cues)
-    ):
+
+    if (self_is_elder or partner_is_child) and (partner_is_mc or (not partner_is_elder and not self_is_child)):
         return (RelationshipKind.FAMILY_ELDER, True)
 
     # 2. Sibling
     sibling_cues = ("sister", "brother", "sibling", "chị", "em gái", "em trai", "anh trai")
-    if any(re.search(rf"\b{c}\b", text_partner) for c in sibling_cues) or any(
-        re.search(rf"\b{c}\b", text_self) for c in sibling_cues
-    ):
-        is_senior = bool(
-            re.search(r"\b(elder|older|chị|anh trai)\b", text_self)
-            or not re.search(r"\b(elder|older|chị|anh trai)\b", text_partner)
-        )
+    partner_is_sib = _is_bound_relation(partner_tag, partner_info, tag, tc, sibling_cues, is_target_protagonist=is_mc)
+    self_is_sib = _is_bound_relation(tag, tc, partner_tag, partner_info, sibling_cues, is_target_protagonist=partner_is_mc)
+
+    if partner_is_sib or self_is_sib:
+        self_has_junior = bool(re.search(r"\b(little|younger|junior|em gái|em trai|muội|đệ)\b", text_self))
+        partner_has_junior = bool(re.search(r"\b(little|younger|junior|em gái|em trai|muội|đệ)\b", text_partner))
+        self_has_senior = bool(re.search(r"\b(elder|older|senior|chị|anh trai|huynh|tỷ)\b", text_self))
+        partner_has_senior = bool(re.search(r"\b(elder|older|senior|chị|anh trai|huynh|tỷ)\b", text_partner))
+
+        if self_has_junior or partner_has_senior:
+            is_senior = False
+        elif self_has_senior or partner_has_junior or is_mc:
+            is_senior = True
+        elif partner_is_mc:
+            is_senior = False
+        else:
+            is_senior = tag < partner_tag
         return (RelationshipKind.FAMILY_SIBLING, is_senior)
 
-    # 3. Superior / Royalty
-    royal_cues = (
-        "queen", "king", "emperor", "empress", "princess", "prince", "lord",
-        "commander", "captain", "bệ hạ", "nữ hoàng", "hoàng đế", "công chúa", "chỉ huy",
-    )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in royal_cues):
-        return (RelationshipKind.SUPERIOR_SUBORDINATE, False)
-    if any(re.search(rf"\b{c}\b", text_self) for c in royal_cues):
-        return (RelationshipKind.SUPERIOR_SUBORDINATE, True)
-
-    # 4. Mentor / Disciple
-    mentor_cues = (
-        "master", "mentor", "teacher", "sensei", "professor", "sư phụ", "thầy", "tông chủ",
-    )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in mentor_cues):
-        return (RelationshipKind.MENTOR_DISCIPLE, False)
-    if any(re.search(rf"\b{c}\b", text_self) for c in mentor_cues):
-        return (RelationshipKind.MENTOR_DISCIPLE, True)
-
-    # 5. Servant / Master
-    servant_cues = ("maid", "butler", "servant", "attendant", "hầu gái", "người hầu", "quản gia")
-    if any(re.search(rf"\b{c}\b", text_partner) for c in servant_cues):
-        return (RelationshipKind.SERVANT_MASTER, True)
-    if any(re.search(rf"\b{c}\b", text_self) for c in servant_cues):
-        return (RelationshipKind.SERVANT_MASTER, False)
-
-    # 6. Rival / Hostile
-    hostile_cues = (
-        "rival", "enemy", "villain", "nemesis", "antagonist", "hostile", "traitor",
-        "kẻ thù", "đối thủ", "phản bội",
-    )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in hostile_cues) or any(
-        re.search(rf"\b{c}\b", text_self) for c in hostile_cues
-    ):
-        return (RelationshipKind.RIVAL_HOSTILE, True)
-
-    # 7. Explicit Romance Cues
+    # 3. Explicit Romance Cues (Prioritized before Royalty for intimate relationships)
     romance_cues = (
         "lover", "wife", "husband", "girlfriend", "boyfriend", "fiancee", "fiance",
         "bride", "vợ", "chồng", "người yêu", "bạn gái",
     )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in romance_cues) or any(
-        re.search(rf"\b{c}\b", text_self) for c in romance_cues
-    ):
+    partner_is_romance = _is_bound_relation(partner_tag, partner_info, tag, tc, romance_cues, is_target_protagonist=is_mc)
+    self_is_romance = _is_bound_relation(tag, tc, partner_tag, partner_info, romance_cues, is_target_protagonist=partner_is_mc)
+
+    if partner_is_romance or self_is_romance:
         return (RelationshipKind.ROMANCE, is_mc)
 
     # Heroine role: only romantic between MC and designated heroine partner
@@ -409,13 +497,71 @@ def infer_semantic_relationship(
     ):
         return (RelationshipKind.ROMANCE, is_mc)
 
+    # 4. Superior / Royalty
+    supreme_royal_cues = (
+        "queen", "king", "emperor", "empress", "bệ hạ", "nữ hoàng", "hoàng đế",
+    )
+    subordinate_royal_cues = (
+        "princess", "prince", "lord", "commander", "captain", "công chúa", "hoàng tử", "chỉ huy",
+    )
+
+    self_has_supreme = any(re.search(rf"\b{c}\b", text_self) for c in supreme_royal_cues)
+    partner_has_supreme = any(re.search(rf"\b{c}\b", text_partner) for c in supreme_royal_cues)
+    self_has_sub = any(re.search(rf"\b{c}\b", text_self) for c in subordinate_royal_cues)
+    partner_has_sub = any(re.search(rf"\b{c}\b", text_partner) for c in subordinate_royal_cues)
+
+    if self_has_supreme and not partner_has_supreme:
+        return (RelationshipKind.SUPERIOR_SUBORDINATE, True)
+    if partner_has_supreme and not self_has_supreme:
+        return (RelationshipKind.SUPERIOR_SUBORDINATE, False)
+    if self_has_sub and not partner_has_sub and not partner_has_supreme:
+        return (RelationshipKind.SUPERIOR_SUBORDINATE, True)
+    if partner_has_sub and not self_has_sub and not self_has_supreme:
+        return (RelationshipKind.SUPERIOR_SUBORDINATE, False)
+
+    # 5. Mentor / Disciple
+    mentor_cues = (
+        "master", "mentor", "teacher", "sensei", "professor", "sư phụ", "thầy", "tông chủ",
+    )
+    disciple_cues = (
+        "apprentice", "disciple", "student", "học trò", "đồ nhi", "đệ tử",
+    )
+    partner_is_mentor = _is_bound_relation(partner_tag, partner_info, tag, tc, mentor_cues, is_target_protagonist=is_mc)
+    self_is_mentor = _is_bound_relation(tag, tc, partner_tag, partner_info, mentor_cues, is_target_protagonist=partner_is_mc)
+    partner_is_disciple = _is_bound_relation(partner_tag, partner_info, tag, tc, disciple_cues, is_target_protagonist=is_mc)
+    self_is_disciple = _is_bound_relation(tag, tc, partner_tag, partner_info, disciple_cues, is_target_protagonist=partner_is_mc)
+
+    if (partner_is_mentor or self_is_disciple) and (is_mc or (not self_is_mentor and not partner_is_disciple)):
+        return (RelationshipKind.MENTOR_DISCIPLE, False)
+    if (self_is_mentor or partner_is_disciple) and (partner_is_mc or (not partner_is_mentor and not self_is_disciple)):
+        return (RelationshipKind.MENTOR_DISCIPLE, True)
+
+    # 6. Servant / Master
+    servant_cues = ("maid", "butler", "servant", "attendant", "hầu gái", "người hầu", "quản gia")
+    partner_is_servant = _is_bound_relation(partner_tag, partner_info, tag, tc, servant_cues, is_target_protagonist=is_mc)
+    self_is_servant = _is_bound_relation(tag, tc, partner_tag, partner_info, servant_cues, is_target_protagonist=partner_is_mc)
+    if partner_is_servant and not self_is_servant:
+        return (RelationshipKind.SERVANT_MASTER, True)
+    if self_is_servant and not partner_is_servant:
+        return (RelationshipKind.SERVANT_MASTER, False)
+
+    # 7. Rival / Hostile
+    hostile_cues = (
+        "rival", "enemy", "villain", "nemesis", "antagonist", "hostile", "traitor",
+        "kẻ thù", "đối thủ", "phản bội", "kẻ thù không đội trời chung",
+    )
+    partner_is_hostile = _is_bound_relation(partner_tag, partner_info, tag, tc, hostile_cues, is_target_protagonist=is_mc)
+    self_is_hostile = _is_bound_relation(tag, tc, partner_tag, partner_info, hostile_cues, is_target_protagonist=partner_is_mc)
+    if partner_is_hostile or self_is_hostile:
+        return (RelationshipKind.RIVAL_HOSTILE, True)
+
     # 8. Close Friend
     friend_cues = (
-        "childhood friend", "best friend", "close friend", "thanh mai trúc mã", "bạn thân",
+        "childhood friend", "best friend", "close friend", "thanh mai trúc mã", "bạn thân", "bạn thời thơ ấu",
     )
-    if any(re.search(rf"\b{c}\b", text_partner) for c in friend_cues) or any(
-        re.search(rf"\b{c}\b", text_self) for c in friend_cues
-    ):
+    partner_is_friend = _is_bound_relation(partner_tag, partner_info, tag, tc, friend_cues, is_target_protagonist=is_mc)
+    self_is_friend = _is_bound_relation(tag, tc, partner_tag, partner_info, friend_cues, is_target_protagonist=partner_is_mc)
+    if partner_is_friend or self_is_friend:
         return (RelationshipKind.FRIENDSHIP_CLOSE, True)
 
     # 9. Default: Formal Acquaintance
@@ -531,7 +677,6 @@ def extract_interactive_dialogue_exchanges(
     max_exchanges: int = 2,
 ) -> dict[str, list[str]]:
     """Extract consecutive two-way dialogue exchanges (e.g. MC <-> Character)."""
-    wanted = set(tags)
     dialogues = [
         u
         for u in units
@@ -551,17 +696,23 @@ def extract_interactive_dialogue_exchanges(
         p = characters.get(mc_tag)
         display_names[mc_tag] = p.display_name if (p and p.display_name) else mc_tag.capitalize()
 
+    tag_lookup = {t.lower(): t for t in tags}
+    if mc_tag:
+        tag_lookup[mc_tag.lower()] = mc_tag
+
     partner_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
     for i in range(len(dialogues) - 1):
         u1, u2 = dialogues[i], dialogues[i + 1]
-        s1, s2 = u1.speaker, u2.speaker
+        s1, s2 = (u1.speaker or "").strip(), (u2.speaker or "").strip()
         if u1.label and u2.label and u1.label != u2.label:
             continue
-        if s1 and s2 and s1 != s2 and abs(u2.seq - u1.seq) <= 4:
-            if s1 in wanted:
-                partner_counts[s1][s2] += 1
-            if s2 in wanted:
-                partner_counts[s2][s1] += 1
+        if s1 and s2 and s1.lower() != s2.lower() and abs(u2.seq - u1.seq) <= 4:
+            s1_key = tag_lookup.get(s1.lower()) or s1
+            s2_key = tag_lookup.get(s2.lower()) or s2
+            if s1_key in partner_counts:
+                partner_counts[s1_key][s2_key] += 1
+            if s2_key in partner_counts:
+                partner_counts[s2_key][s1_key] += 1
 
     exchanges_by_tag: dict[str, list[str]] = {t: [] for t in tags}
 
@@ -592,12 +743,14 @@ def extract_interactive_dialogue_exchanges(
         candidates: list[str] = []
         for i in range(len(dialogues) - 1):
             u1, u2 = dialogues[i], dialogues[i + 1]
-            s1, s2 = u1.speaker, u2.speaker
+            s1, s2 = (u1.speaker or "").strip(), (u2.speaker or "").strip()
             if u1.label and u2.label and u1.label != u2.label:
                 continue
             if abs(u2.seq - u1.seq) > 4:
                 continue
-            if (s1 == tag and s2 == target_partner) or (s1 == target_partner and s2 == tag):
+            s1_k = tag_lookup.get(s1.lower()) or s1
+            s2_k = tag_lookup.get(s2.lower()) or s2
+            if (s1_k == tag and s2_k == target_partner) or (s1_k == target_partner and s2_k == tag):
                 t1 = " ".join(u1.source.strip().split())
                 t2 = " ".join(u2.source.strip().split())
                 if 5 <= len(t1) <= 180 and 5 <= len(t2) <= 180:
@@ -724,7 +877,6 @@ def extract_interaction_network(
     max_partners: int = 3,
 ) -> dict[str, list[str]]:
     """Calculate the primary conversational co-occurrence network for characters."""
-    wanted = set(tags)
     dialogues = [
         u
         for u in units
@@ -734,18 +886,21 @@ def extract_interaction_network(
         and u.speaker.strip().lower() not in NON_INTERACTION_TAGS
     ]
 
+    tag_lookup = {t.lower(): t for t in tags}
     partner_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
     for i in range(len(dialogues) - 1):
         u1, u2 = dialogues[i], dialogues[i + 1]
-        s1, s2 = u1.speaker, u2.speaker
+        s1, s2 = (u1.speaker or "").strip(), (u2.speaker or "").strip()
         if u1.label and u2.label and u1.label != u2.label:
             continue
-        if not s1 or not s2 or s1 == s2 or abs(u2.seq - u1.seq) > 4:
+        if not s1 or not s2 or s1.lower() == s2.lower() or abs(u2.seq - u1.seq) > 4:
             continue
-        if s1 in wanted:
-            partner_counts[s1][s2] += 1
-        if s2 in wanted:
-            partner_counts[s2][s1] += 1
+        s1_key = tag_lookup.get(s1.lower())
+        s2_key = tag_lookup.get(s2.lower())
+        if s1_key:
+            partner_counts[s1_key][s2_key or s2] += 1
+        if s2_key:
+            partner_counts[s2_key][s1_key or s1] += 1
 
     network_by_tag: dict[str, list[str]] = {t: [] for t in tags}
     for tag in tags:
@@ -770,21 +925,23 @@ def extract_salient_locations(
     max_locations: int = 2,
 ) -> dict[str, list[str]]:
     """Determine the most frequent locations and scene contexts where characters speak."""
+    tag_lookup = {t.lower(): t for t in tags}
     location_counts: dict[str, Counter[str]] = {t: Counter() for t in tags}
     dialogues = [u for u in units if u.kind is UnitKind.DIALOGUE and u.speaker]
 
     for u in dialogues:
-        spk = u.speaker
-        if spk in location_counts:
+        spk = (u.speaker or "").strip()
+        spk_tag = tag_lookup.get(spk.lower())
+        if spk_tag:
             lbl = u.label or ""
             loc, _ = infer_scene_cues(lbl)
             if loc:
-                location_counts[spk][loc] += 1
+                location_counts[spk_tag][loc] += 1
             elif lbl:
                 lbl_lower = lbl.lower()
                 if lbl_lower not in ("start", "prologue", "splashscreen", "main_menu", "common"):
                     clean_lbl = lbl.replace("_", " ").strip().title()
-                    location_counts[spk][f"Cảnh {clean_lbl}"] += 1
+                    location_counts[spk_tag][f"Cảnh {clean_lbl}"] += 1
 
     out: dict[str, list[str]] = {}
     for tag in tags:
@@ -891,11 +1048,18 @@ def build_persona_user_prompt(
     if mc_tag:
         mc_prof = existing_chars.get(mc_tag)
         mc_disp = mc_prof.display_name if mc_prof else mc_tag
-        prefix_parts.append(
-            f"\n[LƯU Ý NHÂN VẬT CHÍNH - MC]: Nhân vật chính của game có tag là '{mc_tag}' "
-            f"(tên: '{mc_disp}'). Khi thiết lập pronoun_map, BẮT BUỘC dùng tag '{mc_tag}' "
-            f"làm key xưng hô đối ứng (VD: '{mc_tag}': 'em - anh')."
-        )
+        if any(t.lower() == mc_tag.lower() for t in chunk_tags):
+            prefix_parts.append(
+                f"\n[LƯU Ý NHÂN VẬT CHÍNH - MC]: Nhân vật '{mc_tag}' (tên: '{mc_disp}') là Nhân vật chính (MC). "
+                f"Khi thiết lập pronoun_map cho MC, hãy dùng tag của các nhân vật khác làm key đối ứng "
+                f"(TUYỆT ĐỐI KHÔNG dùng '{mc_tag}' làm key cho chính mình)."
+            )
+        else:
+            prefix_parts.append(
+                f"\n[LƯU Ý NHÂN VẬT CHÍNH - MC]: Nhân vật chính của game có tag là '{mc_tag}' "
+                f"(tên: '{mc_disp}'). Khi thiết lập pronoun_map, BẮT BUỘC dùng tag '{mc_tag}' "
+                f"làm key xưng hô đối ứng (định dạng: '{mc_tag}': '<xưng> - <gọi>')."
+            )
     prefix_parts.append("\n\n")
     return "".join(prefix_parts) + "\n\n".join(char_blocks)
 
@@ -1045,6 +1209,12 @@ def bootstrap_characters_with_llm(
                         pronoun_map[mc_tag] = pronoun_map["mc"]
                     elif mc_tag in pronoun_map and "mc" not in pronoun_map:
                         pronoun_map["mc"] = pronoun_map[mc_tag]
+
+                for self_k in (tag, tag.lower()):
+                    pronoun_map.pop(self_k, None)
+                if mc_tag and tag.lower() == mc_tag.lower():
+                    pronoun_map.pop("mc", None)
+                    pronoun_map.pop(mc_tag, None)
 
                 archetype = str(data.get("archetype") or "").strip()
                 tone_and_voice = str(data.get("tone_and_voice") or "").strip()

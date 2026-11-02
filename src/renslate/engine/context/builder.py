@@ -22,9 +22,11 @@ from renslate.engine.context.prompt_frame import (
 )
 from renslate.engine.context.resolver import (
     _NON_DIALOGUE_TAGS,
+    _PROTAGONIST_TAGS,
     InterlocutorResolver,
     ResolvedInterlocutor,
     _is_scene_boundary,
+    invert_reciprocal_pronoun_rule,
 )
 from renslate.engine.context.tokens import estimate_tokens
 from renslate.engine.tm import FuzzyMatch
@@ -39,6 +41,9 @@ __all__ = [
     "ContextBundle",
     "LookbackItem",
 ]
+
+_invert_reciprocal_pronoun_rule = invert_reciprocal_pronoun_rule
+
 
 QUOTED_RULES = (
     "QUY TẮC BẮT BUỘC:\n"
@@ -245,6 +250,7 @@ class ContextBuilder:
                 present_characters.update(sc_chars)
 
         resolved_listeners_in_batch: set[str] = set()
+        resolved_addressed_pairs: list[tuple[str, str]] = []
 
         if active_resolver is not None:
             active_speakers = {
@@ -273,6 +279,8 @@ class ContextBuilder:
                     )
                     if resolved and resolved.listener:
                         resolved_listeners_in_batch.add(resolved.listener.lower())
+                        if not resolved.is_monologue and u.speaker.strip().lower() != resolved.listener.strip().lower():
+                            resolved_addressed_pairs.append((u.speaker.strip(), resolved.listener.strip()))
                 else:
                     resolved = ResolvedInterlocutor(
                         speaker=None,
@@ -373,6 +381,16 @@ class ContextBuilder:
             if char_prof.pronoun_map:
                 pronoun_parts = []
                 for k, v in sorted(char_prof.pronoun_map.items()):
+                    if k.lower() == (char_prof.tag or "").lower():
+                        continue
+                    if char_prof.display_name and k.lower() == char_prof.display_name.lower():
+                        continue
+                    is_self_mc = (
+                        (char_prof.tag or "").lower() in _PROTAGONIST_TAGS
+                        or "protagonist" in (char_prof.role or "").lower()
+                    )
+                    if is_self_mc and k.lower() in ("mc", "player"):
+                        continue
                     if k in ("to_elder", "to_peer", "to_junior", "to_enemy"):
                         label = {
                             "to_elder": "với bề trên",
@@ -383,6 +401,13 @@ class ContextBuilder:
                         pronoun_parts.append(f"{label} ({v})")
                     else:
                         tgt_char = char_map.get(k) or char_map.get(k.lower())
+                        if not tgt_char and k.lower() in ("mc", "player"):
+                            for p_prof in char_map.values():
+                                if p_prof.tag.lower() in _PROTAGONIST_TAGS or "protagonist" in (p_prof.role or "").lower():
+                                    tgt_char = p_prof
+                                    break
+                        if tgt_char and (tgt_char.tag == char_prof.tag or tgt_char is char_prof):
+                            continue
                         tgt_name = (
                             f"{tgt_char.display_name} ({k})"
                             if tgt_char and tgt_char.display_name.lower() != k.lower()
@@ -459,38 +484,92 @@ class ContextBuilder:
         # 3.2 Dynamic Interlocutor Dialogue Talking Pairs
         relational_lines: list[str] = []
         pairs_seen: set[tuple[str, str]] = set()
-        for i in range(len(active_dialogue_speakers)):
-            for j in range(i + 1, len(active_dialogue_speakers)):
-                s_a, s_b = active_dialogue_speakers[i], active_dialogue_speakers[j]
-                p_a = char_map.get(s_a) or char_map.get(s_a.lower())
-                p_b = char_map.get(s_b) or char_map.get(s_b.lower())
-                if p_a and p_b and p_a.tag != p_b.tag:
-                    pair_key = (p_a.tag, p_b.tag) if p_a.tag < p_b.tag else (p_b.tag, p_a.tag)
-                    if pair_key in pairs_seen:
-                        continue
-                    pairs_seen.add(pair_key)
-                    rule_a_to_b = p_a.pronoun_map.get(p_b.tag) or p_a.pronoun_map.get(
-                        p_b.display_name
+
+        talking_pairs: list[tuple[str, str]] = []
+        if resolved_addressed_pairs:
+            talking_pairs = list(resolved_addressed_pairs)
+        else:
+            if len(active_dialogue_speakers) == 2:
+                talking_pairs.append((active_dialogue_speakers[0], active_dialogue_speakers[1]))
+            elif len(active_dialogue_speakers) > 2:
+                prev_spk_turn: str | None = None
+                for u in batch_units:
+                    if u.speaker and u.speaker.strip().lower() not in _NON_DIALOGUE_TAGS:
+                        curr_spk = u.speaker.strip()
+                        if prev_spk_turn and prev_spk_turn.lower() != curr_spk.lower():
+                            talking_pairs.append((prev_spk_turn, curr_spk))
+                        prev_spk_turn = curr_spk
+            elif len(active_dialogue_speakers) == 1 and lookback:
+                single_lower = active_dialogue_speakers[0].lower()
+                for item in reversed(lookback):
+                    if (
+                        item.speaker
+                        and item.speaker.lower() not in _NON_DIALOGUE_TAGS
+                        and item.speaker.lower() != single_lower
+                    ):
+                        if (
+                            present_characters
+                            and item.speaker.lower() not in {p.lower() for p in present_characters}
+                        ):
+                            continue
+                        talking_pairs.append((active_dialogue_speakers[0], item.speaker))
+                        break
+
+        for s_a, s_b in talking_pairs:
+            p_a = char_map.get(s_a) or char_map.get(s_a.lower())
+            p_b = char_map.get(s_b) or char_map.get(s_b.lower())
+            if p_a and p_b and p_a.tag != p_b.tag:
+                pair_key = (p_a.tag, p_b.tag) if p_a.tag < p_b.tag else (p_b.tag, p_a.tag)
+                if pair_key in pairs_seen:
+                    continue
+                pairs_seen.add(pair_key)
+                rule_a_to_b = (
+                    p_a.pronoun_map.get(p_b.tag)
+                    or p_a.pronoun_map.get(p_b.tag.lower())
+                    or (p_a.pronoun_map.get(p_b.display_name) if p_b.display_name else None)
+                    or (p_a.pronoun_map.get(p_b.display_name.lower()) if p_b.display_name else None)
+                )
+                if not rule_a_to_b:
+                    is_b_mc = (
+                        p_b.tag.lower() in _PROTAGONIST_TAGS
+                        or "protagonist" in (p_b.role or "").lower()
                     )
-                    rule_b_to_a = p_b.pronoun_map.get(p_a.tag) or p_b.pronoun_map.get(
-                        p_a.display_name
+                    if is_b_mc:
+                        rule_a_to_b = p_a.pronoun_map.get("mc") or p_a.pronoun_map.get("player")
+
+                rule_b_to_a = (
+                    p_b.pronoun_map.get(p_a.tag)
+                    or p_b.pronoun_map.get(p_a.tag.lower())
+                    or (p_b.pronoun_map.get(p_a.display_name) if p_a.display_name else None)
+                    or (p_b.pronoun_map.get(p_a.display_name.lower()) if p_a.display_name else None)
+                )
+                if not rule_b_to_a:
+                    is_a_mc = (
+                        p_a.tag.lower() in _PROTAGONIST_TAGS
+                        or "protagonist" in (p_a.role or "").lower()
                     )
-                    if graph is not None:
-                        edge_ab = graph.get_edge(p_a.tag, p_b.tag) or graph.get_edge(s_a, s_b)
-                        if edge_ab and edge_ab.speaker_pronoun and edge_ab.listener_pronoun:
-                            rule_a_to_b = f"{edge_ab.speaker_pronoun} - {edge_ab.listener_pronoun}"
-                        edge_ba = graph.get_edge(p_b.tag, p_a.tag) or graph.get_edge(s_b, s_a)
-                        if edge_ba and edge_ba.speaker_pronoun and edge_ba.listener_pronoun:
-                            rule_b_to_a = f"{edge_ba.speaker_pronoun} - {edge_ba.listener_pronoun}"
-                    if rule_a_to_b or rule_b_to_a:
-                        relational_lines.append(
-                            f"- {p_a.display_name} và {p_b.display_name} đang đối thoại trực tiếp "
-                            f"(cặp {p_a.tag} - {p_b.tag}):"
-                        )
-                        if rule_a_to_b:
-                            relational_lines.append(_format_relational_rule(p_a, p_b, rule_a_to_b))
-                        if rule_b_to_a:
-                            relational_lines.append(_format_relational_rule(p_b, p_a, rule_b_to_a))
+                    if is_a_mc:
+                        rule_b_to_a = p_b.pronoun_map.get("mc") or p_b.pronoun_map.get("player")
+                if graph is not None:
+                    edge_ab = graph.get_edge(p_a.tag, p_b.tag) or graph.get_edge(s_a, s_b)
+                    if edge_ab and edge_ab.speaker_pronoun and edge_ab.listener_pronoun:
+                        rule_a_to_b = f"{edge_ab.speaker_pronoun} - {edge_ab.listener_pronoun}"
+                    edge_ba = graph.get_edge(p_b.tag, p_a.tag) or graph.get_edge(s_b, s_a)
+                    if edge_ba and edge_ba.speaker_pronoun and edge_ba.listener_pronoun:
+                        rule_b_to_a = f"{edge_ba.speaker_pronoun} - {edge_ba.listener_pronoun}"
+                if rule_a_to_b and not rule_b_to_a:
+                    rule_b_to_a = _invert_reciprocal_pronoun_rule(rule_a_to_b)
+                elif rule_b_to_a and not rule_a_to_b:
+                    rule_a_to_b = _invert_reciprocal_pronoun_rule(rule_b_to_a)
+                if rule_a_to_b or rule_b_to_a:
+                    relational_lines.append(
+                        f"- {p_a.display_name} và {p_b.display_name} đang đối thoại trực tiếp "
+                        f"(cặp {p_a.tag} - {p_b.tag}):"
+                    )
+                    if rule_a_to_b:
+                        relational_lines.append(_format_relational_rule(p_a, p_b, rule_a_to_b))
+                    if rule_b_to_a:
+                        relational_lines.append(_format_relational_rule(p_b, p_a, rule_b_to_a))
 
         if relational_lines and available_budget > 80:
             rel_block = "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN:\n" + "\n".join(relational_lines)

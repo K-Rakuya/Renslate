@@ -45,6 +45,7 @@ from renslate.engine.analyze.tropes import (
     PROTAGONIST_TAGS,
 )
 from renslate.engine.context import infer_scene_cues
+from renslate.engine.context.resolver import invert_reciprocal_pronoun_rule
 from renslate.engine.glossary import (
     Glossary,
     _make_plural_aliases,
@@ -359,6 +360,8 @@ def run_analysis(
                 continue
 
             for partner_tag, _ in interactions.get(tag, Counter()).most_common(5):
+                if partner_tag.lower() == tag.lower():
+                    continue
                 if partner_tag in pronoun_map:
                     continue
 
@@ -387,6 +390,12 @@ def run_analysis(
                 if edge_out and edge_out.speaker_pronoun and edge_out.listener_pronoun:
                     spk_pro = edge_out.speaker_pronoun
                     lis_pro = edge_out.listener_pronoun
+                elif edge_in and edge_in.speaker_pronoun and edge_in.listener_pronoun:
+                    inv = invert_reciprocal_pronoun_rule(
+                        f"{edge_in.speaker_pronoun} - {edge_in.listener_pronoun}"
+                    )
+                    if inv:
+                        spk_pro, lis_pro = [p.strip() for p in inv.split(" - ", 1)]
                 elif edge_in and edge_in.kind:
                     if edge_in.kind in (
                         RelationshipKind.RIVAL_HOSTILE,
@@ -400,11 +409,15 @@ def run_analysis(
                             partner_info.get("gender", "unknown"),
                         )
                     else:
+                        inbound_is_senior = edge_in.speaker_pronoun in (
+                            "mẹ", "cha", "bố", "ba", "ông", "bà", "bác", "chú", "cô", "dì",
+                            "anh", "chị", "thầy", "sư phụ", "tiền bối", "trẫm", "ta",
+                        )
                         spk_pro, lis_pro = resolve_pronoun_pair_from_relationship(
                             edge_in.kind,
                             tc["gender"],
                             partner_info.get("gender", "unknown"),
-                            is_speaker_senior=False,
+                            is_speaker_senior=not inbound_is_senior,
                         )
                 elif edge_out and edge_out.kind:
                     spk_pro, lis_pro = resolve_pronoun_pair_from_relationship(
@@ -470,6 +483,16 @@ def run_analysis(
 
                 if spk_pro and lis_pro:
                     pronoun_map[partner_tag] = f"{spk_pro} - {lis_pro}"
+
+            pronoun_map.pop(tag, None)
+            pronoun_map.pop(tag.lower(), None)
+            if is_mc:
+                pronoun_map.pop("mc", None)
+                pronoun_map.pop("player", None)
+            disp_self = str(tc.get("display_name", "")).strip()
+            if disp_self:
+                pronoun_map.pop(disp_self, None)
+                pronoun_map.pop(disp_self.lower(), None)
 
             profile = CharacterProfile(
                 tag=tag,

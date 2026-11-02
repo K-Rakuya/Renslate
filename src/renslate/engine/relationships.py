@@ -108,13 +108,15 @@ def collect_pair_evidence(
         return {}
 
     known_names = {tag: p.display_name for tag, p in characters.items() if p.display_name}
+    name_to_profile = {p.display_name.lower(): p for p in characters.values() if p.display_name}
     participants: dict[str, set[str]] = defaultdict(set)
     for u in dialogue:
         if u.speaker and u.speaker.strip():
             participants[u.label or ""].add(u.speaker.strip())
 
     def _skip(tag: str) -> bool:
-        disp = characters[tag].display_name if tag in characters else ""
+        prof = characters.get(tag) or characters.get(tag.lower()) or name_to_profile.get(tag.lower())
+        disp = prof.display_name if prof else ""
         return is_non_human_or_meta(tag, disp) or is_collective_entity(tag, disp)
 
     evidence: dict[tuple[str, str], PairEvidence] = {}
@@ -134,10 +136,16 @@ def collect_pair_evidence(
             continue
         if _skip(spk) or _skip(lis):
             continue
-        a, b = sorted((spk, lis))
+        prof_spk = characters.get(spk) or characters.get(spk.lower()) or name_to_profile.get(spk.lower())
+        prof_lis = characters.get(lis) or characters.get(lis.lower()) or name_to_profile.get(lis.lower())
+        canon_spk = prof_spk.tag if prof_spk else spk
+        canon_lis = prof_lis.tag if prof_lis else lis
+        if canon_spk.lower() == canon_lis.lower():
+            continue
+        a, b = sorted((canon_spk, canon_lis))
         ev = evidence.setdefault((a, b), PairEvidence(a, b))
         ev.turns += 1
-        ev.lines.append((spk, _clean_line(u.source)))
+        ev.lines.append((canon_spk, _clean_line(u.source)))
     return evidence
 
 
@@ -152,10 +160,13 @@ def _stratified(lines: Sequence[tuple[str, str]], k: int) -> list[tuple[str, str
 
 
 def _describe(tag: str, characters: Mapping[str, CharacterProfile]) -> str:
-    p = characters.get(tag)
+    p = characters.get(tag) or characters.get(tag.lower())
+    if p is None:
+        name_map = {prof.display_name.lower(): prof for prof in characters.values() if prof.display_name}
+        p = name_map.get(tag.lower())
     if p is None:
         return f"- {tag}"
-    parts = [f"- {tag}: {p.display_name or tag}"]
+    parts = [f"- {p.tag}: {p.display_name or p.tag}"]
     if p.gender and p.gender != "unknown":
         parts.append(f"giới tính {p.gender}")
     if p.role:
@@ -175,7 +186,13 @@ def build_relationship_prompt(
     blocks: list[str] = []
     for ev in pairs:
         samples = _stratified(ev.lines, lines_per_pair)
-        sample_text = "\n".join(f'  [{spk}] "{text}"' for spk, text in samples) or "  (không có)"
+        sample_text = (
+            "\n".join(
+                f'  [{spk} -> {ev.b if spk.lower() == ev.a.lower() else ev.a}] "{text}"'
+                for spk, text in samples
+            )
+            or "  (không có)"
+        )
         blocks.append(
             f'Cặp "{ev.key}" ({ev.turns} lượt thoại):\n'
             f"{_describe(ev.a, characters)}\n{_describe(ev.b, characters)}\n"
@@ -274,15 +291,15 @@ def _apply_pair(
         # Keep the profile's pronoun_map consistent with the graph so the prompt never gives
         # two different rules for one pair. Entries typed by a human (no edge behind them)
         # are left alone.
-        prof = profiles.get(src)
+        prof = profiles.get(src) or profiles.get(src.lower())
         if prof is not None:
             rule = f"{forms[0]} - {forms[1]}"
-            current = prof.pronoun_map.get(tgt)
+            current = prof.pronoun_map.get(tgt) or prof.pronoun_map.get(tgt.lower())
             if (current is None or existing is not None) and current != rule:
-                profiles[src] = dataclasses.replace(
+                profiles[prof.tag] = dataclasses.replace(
                     prof, pronoun_map={**prof.pronoun_map, tgt: rule}
                 )
-                changed.add(src)
+                changed.add(prof.tag)
     return written, changed
 
 

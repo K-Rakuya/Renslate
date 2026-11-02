@@ -209,9 +209,9 @@ def translate_glossary_with_llm(
         "địa danh, vật phẩm... từ tiếng Anh sang tiếng Việt chuẩn xác theo phong cách game.\n"
         "Quy tắc:\n"
         "- Tên riêng người, địa danh đặc thù: giữ nguyên hoặc phiên âm tự nhiên nếu cần.\n"
-        "- Thuật ngữ, vai vế, danh xưng, địa điểm, vật phẩm, chiêu thức: dịch chính xác, súc tích "
-        "(ví dụ: Sect -> Tông môn, Elder -> Trưởng lão, Force Field -> Kết giới...).\n"
-        '- Trả về DUY NHẤT một đối tượng JSON dạng: {"Term": "Bản dịch tiếng Việt"}.\n'
+        "- Thuật ngữ, vai vế, danh xưng, địa điểm, vật phẩm: dịch chính xác, tự nhiên "
+        "theo đúng ngữ cảnh và phong cách của tác phẩm.\n"
+        '- Trả về DUY NHẤT một đối tượng JSON dạng: {"<Thuật ngữ>": "<Bản dịch tiếng Việt>"}.\n'
         "Tuyệt đối không giải thích, không markdown code fence ngoài JSON."
     )
 
