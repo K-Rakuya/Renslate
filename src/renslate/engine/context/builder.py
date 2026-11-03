@@ -287,21 +287,35 @@ class ContextBuilder:
                         listener=None,
                         is_monologue=True,
                     )
-                lines_section.append(format_rich_dialogue_line(u, resolved, char_map, graph=graph))
+                is_concise = getattr(self.config.batch, "concise_tags", False)
+                lines_section.append(
+                    format_rich_dialogue_line(
+                        u, resolved, char_map, graph=graph, concise=is_concise
+                    )
+                )
                 prev_unit = u
         else:
+            is_concise = getattr(self.config.batch, "concise_tags", False)
             for u in batch_units:
                 text = u.masked_source or u.source
                 if u.speaker:
                     spk_clean = u.speaker.strip()
                     spk_lower = spk_clean.lower()
                     cp = char_map.get(spk_clean) or char_map.get(spk_lower)
-                    if spk_lower in _NON_DIALOGUE_TAGS:
-                        speaker_tag = f"[Độc thoại/Nội tâm: {u.speaker}] "
-                    elif cp and cp.display_name and cp.display_name.lower() != spk_lower:
-                        speaker_tag = f"[Người nói: {cp.display_name} ({u.speaker})] "
+                    if is_concise:
+                        if spk_lower in _NON_DIALOGUE_TAGS:
+                            speaker_tag = f"[{u.speaker}] "
+                        elif cp and cp.display_name:
+                            speaker_tag = f"[{cp.display_name}] "
+                        else:
+                            speaker_tag = f"[{u.speaker}] "
                     else:
-                        speaker_tag = f"[Người nói: {u.speaker}] "
+                        if spk_lower in _NON_DIALOGUE_TAGS:
+                            speaker_tag = f"[Độc thoại/Nội tâm: {u.speaker}] "
+                        elif cp and cp.display_name and cp.display_name.lower() != spk_lower:
+                            speaker_tag = f"[Người nói: {cp.display_name} ({u.speaker})] "
+                        else:
+                            speaker_tag = f"[Người nói: {u.speaker}] "
                 else:
                     speaker_tag = ""
                 lines_section.append(f"{u.uid} | {speaker_tag}{text}")

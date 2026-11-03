@@ -123,3 +123,27 @@ def test_cli_translate_with_optional_guard_flag(project_root: Path, capsys: pyte
 
     out = capsys.readouterr().out
     assert "Continuous LLM Hallucination Guard đang hoạt động" in out
+
+
+def test_cli_translate_with_concise_tags_flag(project_root: Path) -> None:
+    with (
+        patch(
+            "renslate.engine.llm.LLMClient.complete_json",
+            return_value=({"d:start_a1b2c3d4": "Xin chào!"}, 50, 20),
+        ),
+        patch("renslate.cli.TranslationPipeline") as mock_pipeline_cls,
+    ):
+        mock_pipeline = mock_pipeline_cls.return_value
+        from renslate.engine.translate import TranslationStats
+
+        mock_pipeline.run.return_value = TranslationStats()
+        assert main(["translate", "-p", str(project_root), "--limit", "1", "--concise-tags"]) == 0
+        call_config = mock_pipeline_cls.call_args[0][2]
+        assert call_config.batch.concise_tags is True
+
+
+def test_cli_run_with_concise_tags_flag(project_root: Path) -> None:
+    with patch("renslate.ui.runner.run_unattended_pipeline", return_value=0) as mock_runner:
+        assert main(["run", "-p", str(project_root), "--concise-tags"]) == 0
+        assert mock_runner.call_args.kwargs.get("concise_tags") is True
+

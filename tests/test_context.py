@@ -471,3 +471,56 @@ def test_build_user_prompt_scene_boundary_rich_formatting() -> None:
     # d:3 in scene_castle_gate: Liana speaking to Guard -> turn taking in same scene!
     assert "d:3 | [Người nói: Liana -> Người nghe: Guard] We are travelers." in prompt
 
+
+def test_concise_dialogue_tags_reduces_prompt_tokens() -> None:
+    import dataclasses
+
+    from renslate.core.models import RelationshipEdge, RelationshipKind
+    from renslate.engine.context import format_rich_dialogue_line
+    from renslate.engine.context.resolver import ResolvedInterlocutor
+    from renslate.engine.graph import RelationshipGraph
+
+    cfg = Config()
+    builder_default = ContextBuilder(cfg)
+    builder_concise = ContextBuilder(
+        dataclasses.replace(cfg, batch=dataclasses.replace(cfg.batch, concise_tags=True))
+    )
+
+    chars = {
+        "ren": CharacterProfile("ren", "Ren", gender="male", role="Hero"),
+        "eileen": CharacterProfile("eileen", "Eileen", gender="female", role="Priestess"),
+    }
+    graph = RelationshipGraph()
+    graph.add_edge(RelationshipEdge("ren", "eileen", RelationshipKind.ROMANCE, "anh", "em"))
+
+    unit1 = Unit("d:1", UnitKind.DIALOGUE, 1, "Hello Eileen!", Status.PENDING, speaker="ren")
+    unit2 = Unit("d:2", UnitKind.DIALOGUE, 2, "Hello Ren...", Status.PENDING, speaker="eileen")
+
+    # Test direct formatting
+    resolved = ResolvedInterlocutor(
+        speaker="ren",
+        listener="eileen",
+        detected_emotion="tender",
+    )
+    verbose_line = format_rich_dialogue_line(unit1, resolved, chars, graph=graph, concise=False)
+    concise_line = format_rich_dialogue_line(unit1, resolved, chars, graph=graph, concise=True)
+
+    assert (
+        "[Người nói: Ren -> Người nghe: Eileen | Quan hệ: ROMANCE (Ren xưng 'anh', gọi 'em') | Cảm xúc: tender]"
+        in verbose_line
+    )
+    assert "[Ren -> Eileen | Cảm xúc: tender] Hello Eileen!" in concise_line
+
+    # Test full prompt with concise tags
+    prompt_default = builder_default.build_user_prompt(
+        [unit1, unit2], characters=chars, graph=graph
+    )
+    prompt_concise = builder_concise.build_user_prompt(
+        [unit1, unit2], characters=chars, graph=graph
+    )
+
+    assert "d:1 | [Người nói: Ren -> Người nghe: Eileen" in prompt_default
+    assert "d:1 | [Ren -> Eileen" in prompt_concise
+    assert "d:2 | [Eileen -> Ren" in prompt_concise
+    assert len(prompt_concise) < len(prompt_default)
+

@@ -104,3 +104,37 @@ def test_bootstrap_if_needed_auto_detect_and_idempotence(tmp_path: Path) -> None
         assert mock_trans_gloss.call_count == 0
 
     db.close()
+
+
+def test_run_unattended_pipeline_concise_tags_flag(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from renslate.core.project import Project
+    from renslate.ui.runner import run_unattended_pipeline
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir()
+    tl_dir = tmp_path / "game" / "tl" / "vietnamese"
+    tl_dir.mkdir(parents=True)
+    project = Project.create(tmp_path)
+    with project.open_db() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS scenes (id TEXT PRIMARY KEY)")
+        from renslate.core.models import Status, Unit, UnitKind
+        db.save_unit(Unit("d:1", UnitKind.DIALOGUE, 1, "Hello", Status.PENDING))
+
+    with (
+        patch("renslate.ui.runner.wait_for_server", return_value=True),
+        patch("renslate.ui.runner.detect_server_model", return_value="mock_model"),
+        patch("renslate.ui.runner.bootstrap_if_needed"),
+        patch("renslate.ui.runner.TranslationPipeline") as mock_pipeline_cls,
+        patch("renslate.ui.runner._is_stop_requested", side_effect=[False, True]),
+        patch("renslate.ui.runner.check_server_health", return_value=True),
+    ):
+        mock_pipeline = mock_pipeline_cls.return_value
+        from renslate.engine.translate import TranslationStats
+        mock_pipeline.run.return_value = TranslationStats()
+
+        rc = run_unattended_pipeline(tmp_path, concise_tags=True, plain=True)
+        assert rc == 0
+        call_config = mock_pipeline_cls.call_args[0][2]
+        assert call_config.batch.concise_tags is True

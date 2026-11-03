@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -319,6 +320,7 @@ def run_unattended_pipeline(
     plain: bool = False,
     bootstrap: bool | None = None,
     guard: bool = True,
+    concise_tags: bool = False,
 ) -> int:
     """Execute the autonomous translation process until 100% finished."""
     global _STOP_REQUESTED, _INTERRUPT_COUNT
@@ -343,6 +345,11 @@ def run_unattended_pipeline(
             raise err
 
     config = project.config
+    if concise_tags:
+        config = dataclasses.replace(
+            config,
+            batch=dataclasses.replace(config.batch, concise_tags=True),
+        )
 
     if not wait_for_server(config.llm.base_url, check_interval=0.1):
         _LOG.info("Đã dừng runner theo yêu cầu.")

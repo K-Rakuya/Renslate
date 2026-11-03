@@ -200,6 +200,9 @@ def _cmd_translate(args: argparse.Namespace) -> int:
     if args.temperature is not None:
         llm_cfg = dataclasses.replace(config.llm, temperature=args.temperature)
         config = dataclasses.replace(config, llm=llm_cfg)
+    if getattr(args, "concise_tags", False):
+        batch_cfg = dataclasses.replace(config.batch, concise_tags=True)
+        config = dataclasses.replace(config, batch=batch_cfg)
 
     def _progress(current: int, total: int, msg: str) -> None:
         print(f"[{current}/{total}] {msg}")
@@ -556,6 +559,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         plain=getattr(args, "plain", False),
         bootstrap=bootstrap_arg,
         guard=not getattr(args, "no_guard", False),
+        concise_tags=getattr(args, "concise_tags", False),
     )
 
 
@@ -741,6 +745,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
     )
+    translate.add_argument(
+        "--concise-tags",
+        action="store_true",
+        help="rút gọn nhãn thoại từng dòng (bỏ lặp lại quan hệ) để giảm 25%% token prompt",
+    )
 
     qa = add("qa", _cmd_qa, "kiểm tra chất lượng và phát hiện lỗi bản dịch")
     qa.add_argument(
@@ -890,6 +899,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "--no-guard",
             action="store_true",
             help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
+        )
+        sub.add_argument(
+            "--concise-tags",
+            action="store_true",
+            help="rút gọn nhãn thoại từng dòng (bỏ lặp lại quan hệ) để giảm 25%% token prompt",
         )
 
     run_cmd = add("run", _cmd_run, "chạy dịch tự động liên tục với TUI dashboard")

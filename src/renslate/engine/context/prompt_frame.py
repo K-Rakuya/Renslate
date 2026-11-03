@@ -90,6 +90,7 @@ def format_rich_dialogue_line(
     resolved: ResolvedInterlocutor,
     char_map: dict[str, CharacterProfile],
     graph: RelationshipGraph | None = None,
+    concise: bool = False,
 ) -> str:
     """Format an individual dialogue line with rich relational and interlocutor framing."""
     text = unit.masked_source or unit.source
@@ -110,6 +111,8 @@ def format_rich_dialogue_line(
             spk_label = unit.speaker
 
         emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
+        if concise and spk_lower not in _NON_DIALOGUE_TAGS:
+            return f"{unit.uid} | [{spk_label}{emotion_str}] {text}"
         return f"{unit.uid} | [Độc thoại/Nội tâm: {spk_label}{emotion_str}] {text}"
 
     # 2. Interlocutor Case with Resolved Listener
@@ -199,6 +202,8 @@ def format_rich_dialogue_line(
                 rel_part = f" | Vai trò xã hội: {spk_name} xưng '{spk_pro}', gọi '{lis_pro}'"
 
         emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
+        if concise:
+            return f"{unit.uid} | [{spk_name} -> {lis_name}{emotion_str}] {text}"
         return (
             f"{unit.uid} | [Người nói: {spk_name} -> Người nghe: {lis_name}"
             f"{rel_part}{emotion_str}] {text}"
@@ -211,4 +216,6 @@ def format_rich_dialogue_line(
         spk_label = unit.speaker
 
     emotion_str = _resolve_unit_emotion(unit, resolved.detected_emotion, spk_lower)
+    if concise:
+        return f"{unit.uid} | [{spk_label}{emotion_str}] {text}"
     return f"{unit.uid} | [Người nói: {spk_label}{emotion_str}] {text}"

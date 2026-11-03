@@ -126,6 +126,7 @@ class BatchConfig:
     max_source_tokens: int = _bounded(700, 1)
     lookback: int = _bounded(4, 0)
     workers: int = _bounded(1, 1, 64)
+    concise_tags: bool = False
 
 
 @dataclass(frozen=True, slots=True)
