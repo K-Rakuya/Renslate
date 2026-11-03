@@ -280,3 +280,38 @@ def test_pronoun_inversion_qa_check() -> None:
         pronoun_rules=("anh", "em"),
     )
     assert not any(i.code == "pronoun_inversion" for i in good_mc)
+
+    # Conversational ellipsis: "Sorry for not being able to tell you sooner."
+    # Natural Vietnamese translation starts with "Em xin lỗi..." and addresses "anh".
+    # Must NOT trigger pronoun_inversion error!
+    sorry_issues = qa.check_unit(
+        "d:3",
+        "Sorry for not being able to tell you sooner.",
+        None,
+        "Em xin lỗi vì đã không thể nói cho anh biết sớm hơn.",
+        speaker="na",
+        pronoun_rules=("em", "anh"),
+    )
+    assert not any(i.code == "pronoun_inversion" for i in sorry_issues)
+
+    # Conversational ellipsis: "Thank you so much!"
+    thank_issues = qa.check_unit(
+        "d:4",
+        "Thank you so much!",
+        None,
+        "Em cảm ơn anh rất nhiều!",
+        speaker="na",
+        pronoun_rules=("em", "anh"),
+    )
+    assert not any(i.code == "pronoun_inversion" for i in thank_issues)
+
+    # Conversational ellipsis without other pronoun: "Thank you!" -> "Em cảm ơn ạ!"
+    thank_polite = qa.check_unit(
+        "d:5",
+        "Thank you!",
+        None,
+        "Em cảm ơn ạ!",
+        speaker="na",
+        pronoun_rules=("em", "anh"),
+    )
+    assert not any(i.code == "pronoun_inversion" for i in thank_polite)

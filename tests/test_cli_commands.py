@@ -119,10 +119,20 @@ def test_cli_translate_with_optional_guard_flag(project_root: Path, capsys: pyte
         "renslate.engine.llm.LLMClient.complete_json",
         return_value=({"d:start_a1b2c3d4": target_val}, 50, 20),
     ):
-        assert main(["translate", "-p", str(project_root), "--limit", "1", "--guard"]) == 0
+        assert main(["translate", "-p", str(project_root), "--limit", "1"]) == 0
 
     out = capsys.readouterr().out
     assert "Continuous LLM Hallucination Guard đang hoạt động" in out
+
+    # Verify --no-guard disables it
+    with patch(
+        "renslate.engine.llm.LLMClient.complete_json",
+        return_value=({"d:start_a1b2c3d4": target_val}, 50, 20),
+    ):
+        assert main(["translate", "-p", str(project_root), "--limit", "1", "--no-guard"]) == 0
+
+    out_no_guard = capsys.readouterr().out
+    assert "Continuous LLM Hallucination Guard đang hoạt động" not in out_no_guard
 
 
 def test_cli_translate_with_concise_tags_flag(project_root: Path) -> None:

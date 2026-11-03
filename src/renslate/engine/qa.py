@@ -144,6 +144,11 @@ _SOUND_EFFECT_RE = re.compile(
 _STUTTER_NAME_RE = re.compile(r"^[A-Za-z]-[A-Za-z0-9_'\"]+[!,\.\?]*$")
 _RE_YOU = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b", re.IGNORECASE)
 _RE_I = re.compile(r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b", re.IGNORECASE)
+_ELLIPSIS_FIRST_PERSON_RE = re.compile(
+    r"^[“\"'«„「『(\uff08\s]*"
+    r"(?:thank|thanks|sorry|pardon|excuse|glad|happy|nice|love|miss|hate|hope|wish|see|told|promise|beg|welcome|congrat|cheers)\b",
+    re.IGNORECASE,
+)
 
 
 def is_non_translatable_text(
@@ -463,38 +468,47 @@ class QAChecker:
                 core_tgt = re.sub(r"^(?:[\w\-]+[!?,.~]+\s*)+", "", tgt_clean)
 
                 if _RE_YOU.search(source) and not _RE_I.search(source):
-                    pat = (
-                        rf"^(?:sao\s+|tại sao\s+|liệu\s+|có phải\s+|phải chăng\s+)?"
-                        rf"{re.escape(self_p.lower())}\b"
+                    has_other_p = bool(
+                        re.search(rf"\b{re.escape(other_p.lower())}\b", core_tgt)
                     )
-                    if re.search(pat, core_tgt):
-                        issues.append(
-                            QAIssue(
-                                uid,
-                                "pronoun_inversion",
-                                "error",
-                                f"Đảo ngược đại từ: câu thoại ngôi thứ hai (you) bị dịch "
-                                f"thành đại từ tự xưng '{self_p}' thay vì "
-                                f"gọi đối phương '{other_p}'.",
-                            )
+                    is_ellipsis = bool(_ELLIPSIS_FIRST_PERSON_RE.search(source.strip()))
+                    if not is_ellipsis and not has_other_p:
+                        pat = (
+                            rf"^(?:sao\s+|tại sao\s+|liệu\s+|có phải\s+|phải chăng\s+)?"
+                            rf"{re.escape(self_p.lower())}\b"
                         )
+                        if re.search(pat, core_tgt):
+                            issues.append(
+                                QAIssue(
+                                    uid,
+                                    "pronoun_inversion",
+                                    "error",
+                                    f"Đảo ngược đại từ: câu thoại ngôi thứ hai (you) bị dịch "
+                                    f"thành đại từ tự xưng '{self_p}' thay vì "
+                                    f"gọi đối phương '{other_p}'.",
+                                )
+                            )
 
                 elif _RE_I.search(source) and not _RE_YOU.search(source):
-                    pat = (
-                        rf"^(?:sao\s+|tại sao\s+|liệu\s+|có phải\s+|phải chăng\s+)?"
-                        rf"{re.escape(other_p.lower())}\b"
+                    has_self_p = bool(
+                        re.search(rf"\b{re.escape(self_p.lower())}\b", core_tgt)
                     )
-                    if re.search(pat, core_tgt):
-                        issues.append(
-                            QAIssue(
-                                uid,
-                                "pronoun_inversion",
-                                "error",
-                                f"Đảo ngược đại từ: câu thoại ngôi thứ nhất (I) bị dịch "
-                                f"thành đại từ gọi đối phương '{other_p}' thay vì "
-                                f"tự xưng '{self_p}'.",
-                            )
+                    if not has_self_p:
+                        pat = (
+                            rf"^(?:sao\s+|tại sao\s+|liệu\s+|có phải\s+|phải chăng\s+)?"
+                            rf"{re.escape(other_p.lower())}\b"
                         )
+                        if re.search(pat, core_tgt):
+                            issues.append(
+                                QAIssue(
+                                    uid,
+                                    "pronoun_inversion",
+                                    "error",
+                                    f"Đảo ngược đại từ: câu thoại ngôi thứ nhất (I) bị dịch "
+                                    f"thành đại từ gọi đối phương '{other_p}' thay vì "
+                                    f"tự xưng '{self_p}'.",
+                                )
+                            )
 
         return issues
 

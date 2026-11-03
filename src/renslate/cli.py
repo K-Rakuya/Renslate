@@ -207,7 +207,7 @@ def _cmd_translate(args: argparse.Namespace) -> int:
     def _progress(current: int, total: int, msg: str) -> None:
         print(f"[{current}/{total}] {msg}")
 
-    guard_enabled = getattr(args, "guard", False) and not getattr(args, "no_guard", False)
+    guard_enabled = not getattr(args, "no_guard", False)
     guard = None
     if guard_enabled:
         try:
@@ -253,7 +253,6 @@ def _cmd_qa(args: argparse.Namespace) -> int:
 
     with project.open_db() as database:
         units = database.all_units()
-        glossary = database.get_glossary()
 
         for u in units:
             if not u.target or u.status.value == "obsolete":
@@ -264,7 +263,7 @@ def _cmd_qa(args: argparse.Namespace) -> int:
                 u.source,
                 masked,
                 u.target,
-                glossary_matches=glossary,
+                glossary_matches=(),
                 speaker=u.speaker,
             )
             if issues:
@@ -738,12 +737,12 @@ def _build_parser() -> argparse.ArgumentParser:
     translate.add_argument(
         "--guard",
         action="store_true",
-        help="bật thẩm định LLM Hallucination Guard đồng bộ trong lúc dịch (mặc định tắt; khuyến nghị dùng 'renslate qa --guard' để thẩm định riêng)",
+        help="thẩm định LLM Hallucination Guard liên tục (mặc định đã bật)",
     )
     translate.add_argument(
         "--no-guard",
         action="store_true",
-        help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
+        help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục để tăng tốc độ",
     )
     translate.add_argument(
         "--concise-tags",

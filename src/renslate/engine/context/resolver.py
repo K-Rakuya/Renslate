@@ -28,6 +28,7 @@ __all__ = [
     "_extract_unit_file",
     "_is_scene_boundary",
     "_strip_outer_quotes",
+    "harmonize_reciprocal_rules",
     "invert_reciprocal_pronoun_rule",
 ]
 
@@ -63,6 +64,45 @@ _TRAILING_VOCATIVE_RE = re.compile(
 _MEDIAL_VOCATIVE_RE = re.compile(
     r"(?:[,;—\-\uff0c\uff1b—]|(?:\.{2,}|…|~|\u301c))\s*([A-Za-zÀ-ỹ0-9_'\-]+)\s*"
     r"(?:[,;—\-\uff0c\uff1b—]|(?:\.{2,}|…|~|\u301c))",
+    re.IGNORECASE,
+)
+
+_NON_VOCATIVE_PRE_WORDS = frozenset(
+    {
+        "and",
+        "or",
+        "but",
+        "about",
+        "with",
+        "to",
+        "for",
+        "from",
+        "at",
+        "by",
+        "is",
+        "are",
+        "was",
+        "were",
+        "where",
+        "what",
+        "who",
+        "whom",
+        "whose",
+        "how",
+        "why",
+        "like",
+        "meet",
+        "saw",
+        "see",
+        "ask",
+        "asked",
+        "call",
+        "called",
+    }
+)
+
+_CLAUSE_TRAILING_VOCATIVE_RE = re.compile(
+    r"(?:^|(\b\w+\b)\s+)([A-Za-zÀ-ỹ0-9_'\-]+)\s*([,!?:;\-—\uff0c\uff01\uff1f~…])\s*$",
     re.IGNORECASE,
 )
 
@@ -127,6 +167,8 @@ _RECIPROCAL_PRONOUN_PAIRS: frozenset[tuple[str, str]] = frozenset(
         ("tỷ", "đệ"), ("đệ", "tỷ"),
         ("chàng", "nàng"), ("nàng", "chàng"),
         ("ta", "con"), ("con", "ta"),
+        ("tớ", "cậu"), ("cậu", "tớ"),
+        ("mình", "cậu"), ("cậu", "mình"),
     }
 )
 
@@ -140,6 +182,26 @@ def invert_reciprocal_pronoun_rule(rule: str) -> str | None:
             if key in _RECIPROCAL_PRONOUN_PAIRS:
                 return f"{pts[1]} - {pts[0]}"
     return None
+
+
+def harmonize_reciprocal_rules(
+    rule_a_to_b: str | None, rule_b_to_a: str | None
+) -> tuple[str | None, str | None]:
+    """Harmonize reciprocal pronoun rules between two characters.
+
+    If one character has an intimate reciprocal rule (e.g. 'em - anh')
+    and the other has a generic rule (e.g. 'tôi - em', 'tôi - cậu', or None),
+    the reciprocal rule ('anh - em') overrides the generic rule to eliminate asymmetry.
+    """
+    inv_a = invert_reciprocal_pronoun_rule(rule_a_to_b) if rule_a_to_b else None
+    inv_b = invert_reciprocal_pronoun_rule(rule_b_to_a) if rule_b_to_a else None
+
+    if inv_a and (not rule_b_to_a or (rule_b_to_a.strip().lower().startswith(("tôi -", "ta -")) and not inv_b)):
+        rule_b_to_a = inv_a
+    elif inv_b and (not rule_a_to_b or (rule_a_to_b.strip().lower().startswith(("tôi -", "ta -")) and not inv_a)):
+        rule_a_to_b = inv_b
+
+    return rule_a_to_b, rule_b_to_a
 
 _FEMALE_KINSHIP: frozenset[str] = frozenset(
     {"mother", "mom", "mama", "mẹ", "má", "sister", "chị", "em gái", "aunt", "cô", "dì", "bà", "con gái", "cháu gái"}
@@ -430,7 +492,14 @@ class InterlocutorResolver:
         clean = text.strip()
         speaker_norm = speaker.strip().lower() if speaker else None
 
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
+        # 0. Normalize technical placeholders and pause markers to clause breaks
+        clean_clauses = re.sub(r"⟦[^⟧]+⟧", "\n", clean)
+        sentences = [
+            s.strip()
+            for part in re.split(r"[\n\r]+", clean_clauses)
+            for s in re.split(r"(?<=[.!?])\s+", part)
+            if s.strip()
+        ]
         if not sentences:
             sentences = [clean]
 
@@ -466,6 +535,18 @@ class InterlocutorResolver:
                 tag = _lookup(cand)
                 if tag:
                     return tag, "vocative"
+
+        # 2b. Clause-trailing vocative across separated clauses / pause markers
+        for s in reversed(sentences):
+            m = _CLAUSE_TRAILING_VOCATIVE_RE.search(s)
+            if m:
+                pre_word = (m.group(1) or "").lower()
+                punct = m.group(3)
+                if pre_word not in _NON_VOCATIVE_PRE_WORDS and not (punct == "?" and not pre_word):
+                    cand = self._clean_cand(m.group(2))
+                    tag = _lookup(cand)
+                    if tag:
+                        return tag, "vocative"
 
         # 3. Leading vocative in subsequent sentences
         for s in sentences[1:]:
@@ -660,7 +741,13 @@ class InterlocutorResolver:
             )
 
         # 3. Kinship / Title Address Fallback (leading and trailing)
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_dial) if s.strip()]
+        clean_dial_clauses = re.sub(r"⟦[^⟧]+⟧", "\n", clean_dial)
+        sentences = [
+            s.strip()
+            for part in re.split(r"[\n\r]+", clean_dial_clauses)
+            for s in re.split(r"(?<=[.!?])\s+", part)
+            if s.strip()
+        ]
         if not sentences:
             sentences = [clean_dial]
 

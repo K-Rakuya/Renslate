@@ -524,3 +524,51 @@ def test_concise_dialogue_tags_reduces_prompt_tokens() -> None:
     assert "d:2 | [Eileen -> Ren" in prompt_concise
     assert len(prompt_concise) < len(prompt_default)
 
+
+def test_resolver_vocative_with_placeholders_and_clause_trailing() -> None:
+    from renslate.engine.context.resolver import InterlocutorResolver
+
+    resolver = InterlocutorResolver()
+    name_map = {"r": "Ryoko", "mc": "Mc", "s": "Shika"}
+
+    # Clause trailing vocative right before a technical placeholder
+    u = Unit(
+        "d:10",
+        UnitKind.DIALOGUE,
+        1,
+        "Thanks for cleaning that up Ryoko, ⟦T1⟧I'll have a talk with Shika...",
+        Status.PENDING,
+        speaker="mc",
+    )
+    resolved = resolver.resolve(u, known_names=name_map)
+    assert resolved.listener == "r"
+    assert not resolved.is_monologue
+    assert resolved.resolution_method == "vocative"
+
+
+def test_reciprocal_pronoun_rule_harmonization() -> None:
+    from renslate.engine.context import format_rich_dialogue_line
+    from renslate.engine.context.resolver import ResolvedInterlocutor, harmonize_reciprocal_rules
+
+    # Test standalone helper
+    # 1. Asymmetric: na calls mc "em - anh", mc calls na "tôi - em"
+    r_na, r_mc = harmonize_reciprocal_rules("em - anh", "tôi - em")
+    assert r_na == "em - anh"
+    assert r_mc == "anh - em"
+
+    # 2. Symmetric: already harmonious
+    r1, r2 = harmonize_reciprocal_rules("anh - em", "em - anh")
+    assert r1 == "anh - em"
+    assert r2 == "em - anh"
+
+    # 3. In format_rich_dialogue_line:
+    chars = {
+        "mc": CharacterProfile("mc", "Mc", gender="male", pronoun_map={"na": "tôi - em"}),
+        "na": CharacterProfile("na", "Natsuki", gender="female", pronoun_map={"mc": "em - anh"}),
+    }
+    unit_mc = Unit("d:1", UnitKind.DIALOGUE, 1, "Hello Natsuki.", Status.PENDING, speaker="mc")
+    resolved_mc = ResolvedInterlocutor(speaker="mc", listener="na", is_monologue=False)
+    line = format_rich_dialogue_line(unit_mc, resolved_mc, chars)
+    # Mc speaking to Natsuki must be harmonized to "anh - em" rather than "tôi - em"
+    assert "[Người nói: Mc -> Người nghe: Natsuki | Quan hệ: Mc xưng 'anh', gọi 'em']" in line
+

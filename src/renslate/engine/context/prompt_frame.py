@@ -10,7 +10,7 @@ from renslate.engine.context.resolver import (
     _NON_DIALOGUE_TAGS,
     _PROTAGONIST_TAGS,
     ResolvedInterlocutor,
-    invert_reciprocal_pronoun_rule,
+    harmonize_reciprocal_rules,
 )
 
 if TYPE_CHECKING:
@@ -145,51 +145,53 @@ def format_rich_dialogue_line(
                 p_desc = ""
             rel_part = f" | Quan hệ: {kind_str}{p_desc}"
 
-        if not rel_part and cp_spk and cp_spk.pronoun_map:
-            tgt_key = cp_lis.tag if cp_lis else lis_clean
-            tgt_name = cp_lis.display_name if cp_lis else lis_clean
-            p_rule = (
-                cp_spk.pronoun_map.get(tgt_key)
-                or cp_spk.pronoun_map.get(tgt_name)
-                or cp_spk.pronoun_map.get(tgt_key.lower())
-                or (cp_spk.pronoun_map.get(tgt_name.lower()) if tgt_name else None)
-            )
-            if not p_rule:
-                is_mc = (
-                    tgt_key.lower() in _PROTAGONIST_TAGS
-                    or (cp_lis is not None and "protagonist" in (cp_lis.role or "").lower())
+        if not rel_part:
+            p_rule = None
+            if cp_spk and cp_spk.pronoun_map:
+                tgt_key = cp_lis.tag if cp_lis else lis_clean
+                tgt_name = cp_lis.display_name if cp_lis else lis_clean
+                p_rule = (
+                    cp_spk.pronoun_map.get(tgt_key)
+                    or cp_spk.pronoun_map.get(tgt_name)
+                    or cp_spk.pronoun_map.get(tgt_key.lower())
+                    or (cp_spk.pronoun_map.get(tgt_name.lower()) if tgt_name else None)
                 )
-                if is_mc:
-                    p_rule = cp_spk.pronoun_map.get("mc") or cp_spk.pronoun_map.get("player")
-            if p_rule and tgt_key.lower() != (cp_spk.tag or "").lower():
+                if not p_rule:
+                    is_mc = (
+                        tgt_key.lower() in _PROTAGONIST_TAGS
+                        or (cp_lis is not None and "protagonist" in (cp_lis.role or "").lower())
+                    )
+                    if is_mc:
+                        p_rule = cp_spk.pronoun_map.get("mc") or cp_spk.pronoun_map.get("player")
+
+            rev_rule = None
+            if cp_lis and cp_lis.pronoun_map:
+                rev_key = cp_spk.tag if cp_spk else spk_clean
+                rev_name = cp_spk.display_name if cp_spk else spk_clean
+                rev_rule = (
+                    cp_lis.pronoun_map.get(rev_key)
+                    or cp_lis.pronoun_map.get(rev_name)
+                    or cp_lis.pronoun_map.get(rev_key.lower())
+                    or (cp_lis.pronoun_map.get(rev_name.lower()) if rev_name else None)
+                )
+                if not rev_rule:
+                    is_spk_mc = (
+                        rev_key.lower() in _PROTAGONIST_TAGS
+                        or (cp_spk is not None and "protagonist" in (cp_spk.role or "").lower())
+                    )
+                    if is_spk_mc:
+                        rev_rule = cp_lis.pronoun_map.get("mc") or cp_lis.pronoun_map.get("player")
+
+            # Harmonize reciprocal rules (e.g. if A calls B "anh", B reciprocates with "anh - em")
+            p_rule, _ = harmonize_reciprocal_rules(p_rule, rev_rule)
+
+            if p_rule:
                 rule_clean = p_rule.strip()
                 if " - " in rule_clean and not rule_clean.startswith("xưng"):
                     parts = [p.strip() for p in rule_clean.split(" - ", 1)]
                     rel_part = f" | Quan hệ: {spk_name} xưng '{parts[0]}', gọi '{parts[1]}'"
                 else:
                     rel_part = f" | Quan hệ: {rule_clean}"
-
-        if not rel_part and cp_lis and cp_lis.pronoun_map:
-            rev_key = cp_spk.tag if cp_spk else spk_clean
-            rev_name = cp_spk.display_name if cp_spk else spk_clean
-            rev_rule = (
-                cp_lis.pronoun_map.get(rev_key)
-                or cp_lis.pronoun_map.get(rev_name)
-                or cp_lis.pronoun_map.get(rev_key.lower())
-                or (cp_lis.pronoun_map.get(rev_name.lower()) if rev_name else None)
-            )
-            if not rev_rule:
-                is_spk_mc = (
-                    rev_key.lower() in _PROTAGONIST_TAGS
-                    or (cp_spk is not None and "protagonist" in (cp_spk.role or "").lower())
-                )
-                if is_spk_mc:
-                    rev_rule = cp_lis.pronoun_map.get("mc") or cp_lis.pronoun_map.get("player")
-            if rev_rule and rev_key.lower() != (cp_lis.tag or "").lower():
-                inv_p = invert_reciprocal_pronoun_rule(rev_rule)
-                if inv_p:
-                    parts = [p.strip() for p in inv_p.split(" - ", 1)]
-                    rel_part = f" | Quan hệ: {spk_name} xưng '{parts[0]}', gọi '{parts[1]}'"
         if not rel_part and (
             (cp_spk is None and MobRoleClassifier.classify(spk_clean))
             or (cp_lis is None and MobRoleClassifier.classify(lis_clean))

@@ -26,6 +26,7 @@ from renslate.engine.context.resolver import (
     InterlocutorResolver,
     ResolvedInterlocutor,
     _is_scene_boundary,
+    harmonize_reciprocal_rules,
     invert_reciprocal_pronoun_rule,
 )
 from renslate.engine.context.tokens import estimate_tokens
@@ -502,11 +503,33 @@ class ContextBuilder:
         talking_pairs: list[tuple[str, str]] = []
         if resolved_addressed_pairs:
             talking_pairs = list(resolved_addressed_pairs)
+            speakers_in_pairs = {s.lower() for pair in talking_pairs for s in pair}
+            orphaned_speakers = [
+                s for s in active_dialogue_speakers if s.lower() not in speakers_in_pairs
+            ]
+            if orphaned_speakers:
+                prev_spk_turn: str | None = None
+                orphaned_set = {o.lower() for o in orphaned_speakers}
+                for u in batch_units:
+                    if u.speaker and u.speaker.strip().lower() not in _NON_DIALOGUE_TAGS:
+                        curr_spk = u.speaker.strip()
+                        if (
+                            prev_spk_turn
+                            and prev_spk_turn.lower() != curr_spk.lower()
+                            and (
+                                curr_spk.lower() in orphaned_set
+                                or prev_spk_turn.lower() in orphaned_set
+                            )
+                        ):
+                            pair = (prev_spk_turn, curr_spk)
+                            if pair not in talking_pairs and (pair[1], pair[0]) not in talking_pairs:
+                                talking_pairs.append(pair)
+                        prev_spk_turn = curr_spk
         else:
             if len(active_dialogue_speakers) == 2:
                 talking_pairs.append((active_dialogue_speakers[0], active_dialogue_speakers[1]))
             elif len(active_dialogue_speakers) > 2:
-                prev_spk_turn: str | None = None
+                prev_spk_turn = None
                 for u in batch_units:
                     if u.speaker and u.speaker.strip().lower() not in _NON_DIALOGUE_TAGS:
                         curr_spk = u.speaker.strip()
@@ -571,10 +594,7 @@ class ContextBuilder:
                     edge_ba = graph.get_edge(p_b.tag, p_a.tag) or graph.get_edge(s_b, s_a)
                     if edge_ba and edge_ba.speaker_pronoun and edge_ba.listener_pronoun:
                         rule_b_to_a = f"{edge_ba.speaker_pronoun} - {edge_ba.listener_pronoun}"
-                if rule_a_to_b and not rule_b_to_a:
-                    rule_b_to_a = _invert_reciprocal_pronoun_rule(rule_a_to_b)
-                elif rule_b_to_a and not rule_a_to_b:
-                    rule_a_to_b = _invert_reciprocal_pronoun_rule(rule_b_to_a)
+                rule_a_to_b, rule_b_to_a = harmonize_reciprocal_rules(rule_a_to_b, rule_b_to_a)
                 if rule_a_to_b or rule_b_to_a:
                     relational_lines.append(
                         f"- {p_a.display_name} và {p_b.display_name} đang đối thoại trực tiếp "
