@@ -600,3 +600,45 @@ def test_llm_client_thread_safe_locking() -> None:
         client.close()
         server.shutdown()
 
+
+def test_llm_client_socket_sets_tcp_nodelay() -> None:
+    import http.server
+    import socket
+    import threading
+
+    class PingHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            body = json.dumps({
+                "choices": [{"message": {"role": "assistant", "content": '{"d:1": "ok"}'}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_: Any) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), PingHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    cfg = LLMConfig(base_url=f"http://127.0.0.1:{server.server_port}/v1", model="test")
+    client = LLMClient(cfg)
+    try:
+        res, _, _ = client.complete_json("sys", "user")
+        assert res == {"d:1": "ok"}
+        assert client._conn is not None
+        assert client._conn.sock is not None
+        val = client._conn.sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        assert val != 0
+    finally:
+        client.close()
+        server.shutdown()
+

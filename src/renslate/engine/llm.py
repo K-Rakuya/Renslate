@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import re
+import socket
 import threading
 import time
 import types
@@ -436,6 +437,11 @@ class LLMClient:
         with self._lock:
             reused = self._conn is not None
             conn = self._get_connection()
+            if getattr(conn, "sock", None) is None:
+                conn.connect()
+                if getattr(conn, "sock", None) is not None:
+                    with contextlib.suppress(OSError):
+                        conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             try:
                 conn.request("POST", self._path, body=data, headers=headers)
                 resp = conn.getresponse()
@@ -458,6 +464,11 @@ class LLMClient:
                 if reused:
                     _LOG.debug("Mất kết nối HTTP Keep-Alive (%s). Đang tự động kết nối lại...", err)
                     new_conn = self._get_connection()
+                    if getattr(new_conn, "sock", None) is None:
+                        new_conn.connect()
+                        if getattr(new_conn, "sock", None) is not None:
+                            with contextlib.suppress(OSError):
+                                new_conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     new_conn.request("POST", self._path, body=data, headers=headers)
                     resp = new_conn.getresponse()
                     body = resp.read().decode("utf-8")
