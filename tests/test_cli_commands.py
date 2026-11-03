@@ -87,3 +87,39 @@ def test_cli_preview_command(project_root: Path, capsys: pytest.CaptureFixture[s
     assert "Xem trước" in out2
     assert "ENG:" in out2
     assert "VIE:" in out2
+
+
+def test_cli_qa_with_decoupled_guard(project_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Test renslate qa --guard with mock HallucinationGuard
+    mock_scan_resp = {
+        "scanned_units": [
+            {
+                "uid": "d:start_a1b2c3d4",
+                "verdict": "PASS",
+                "issue_type": "none",
+                "confidence": 0.98,
+                "explanation": "Dịch chuẩn xác",
+            }
+        ]
+    }
+    with patch(
+        "renslate.engine.llm.LLMClient.complete_json",
+        return_value=(mock_scan_resp, 100, 30),
+    ):
+        assert main(["qa", "-p", str(project_root), "--guard", "--limit", "5"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Bắt đầu thẩm định ảo giác bằng LLM Hallucination Guard" in out
+    assert "Đang quét lô 1/1" in out
+
+
+def test_cli_translate_with_optional_guard_flag(project_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    target_val = "Xin chào bạn!"
+    with patch(
+        "renslate.engine.llm.LLMClient.complete_json",
+        return_value=({"d:start_a1b2c3d4": target_val}, 50, 20),
+    ):
+        assert main(["translate", "-p", str(project_root), "--limit", "1", "--guard"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Continuous LLM Hallucination Guard đang hoạt động" in out

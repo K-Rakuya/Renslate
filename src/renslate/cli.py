@@ -204,15 +204,15 @@ def _cmd_translate(args: argparse.Namespace) -> int:
     def _progress(current: int, total: int, msg: str) -> None:
         print(f"[{current}/{total}] {msg}")
 
-    guard_enabled = not getattr(args, "no_guard", False)
+    guard_enabled = getattr(args, "guard", False) and not getattr(args, "no_guard", False)
     guard = None
     if guard_enabled:
         try:
             from renslate.engine.hallucination import HallucinationGuard
 
             guard = HallucinationGuard(config=config.llm)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("Không thể khởi tạo HallucinationGuard: %s", exc)
 
     with project.open_db() as database:
         pipeline = TranslationPipeline(project, database, config, hallucination_guard=guard)
@@ -274,12 +274,62 @@ def _cmd_qa(args: argparse.Namespace) -> int:
                         file=sys.stderr if issue.severity == "error" else sys.stdout,
                     )
 
+        if getattr(args, "guard", False):
+            from renslate.core.models import UnitKind
+            from renslate.engine.hallucination import (
+                HallucinationGuard,
+                persist_hallucination_audit,
+            )
+
+            guard = HallucinationGuard(config=project.config.llm)
+            limit = getattr(args, "limit", None)
+            candidates = [
+                u
+                for u in units
+                if u.target
+                and u.kind == UnitKind.DIALOGUE
+                and any(c.isalnum() for c in u.source)
+                and not (
+                    u.source.strip().startswith("[")
+                    and u.source.strip().endswith("]")
+                    and ":" in u.source
+                )
+            ]
+            if limit:
+                candidates = candidates[:limit]
+
+            if candidates:
+                print(
+                    f"\nBắt đầu thẩm định ảo giác bằng LLM Hallucination Guard ({len(candidates)} dòng)..."
+                )
+                batch_size = max(1, project.config.batch.max_lines)
+                total_batches = (len(candidates) + batch_size - 1) // batch_size
+                for idx, i in enumerate(range(0, len(candidates), batch_size), start=1):
+                    chunk = candidates[i : i + batch_size]
+                    print(f"  Đang quét lô {idx}/{total_batches} ({len(chunk)} dòng)...")
+                    scan_results = guard.scan_batch(chunk, context_window="")
+                    persist_hallucination_audit(database, scan_results)
+                    for r in scan_results:
+                        if r.has_hallucination:
+                            sugg = (
+                                f" -> Gợi ý: {r.suggested_correction}"
+                                if r.suggested_correction
+                                else ""
+                            )
+                            print(
+                                f"  [HALLUCINATION] {r.unit_id} ({r.category}): {r.explanation}{sugg}",
+                                file=sys.stderr,
+                            )
+                            issues_found += 1
+                            if r.severity == "error":
+                                errors_found += 1
+
         try:
             audit_logs = database.execute(
                 "SELECT uid, issue_type, explanation, suggested_correction "
                 "FROM qa_audit_log WHERE verdict = 'FAIL' ORDER BY created_at DESC LIMIT 50"
             ).fetchall()
-            if audit_logs:
+            if audit_logs and not getattr(args, "guard", False):
                 print(
                     f"\nPhát hiện {len(audit_logs)} cảnh báo từ LLM Hallucination Guard (Audit Log):"
                 )
@@ -682,12 +732,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--retry-failed", action="store_true", help="thử dịch lại các dòng từng bị lỗi"
     )
     translate.add_argument(
+        "--guard",
+        action="store_true",
+        help="bật thẩm định LLM Hallucination Guard đồng bộ trong lúc dịch (mặc định tắt; khuyến nghị dùng 'renslate qa --guard' để thẩm định riêng)",
+    )
+    translate.add_argument(
         "--no-guard",
         action="store_true",
         help="tắt giai đoạn LLM Hallucination Guard quét ảo giác liên tục",
     )
 
-    add("qa", _cmd_qa, "kiểm tra chất lượng và phát hiện lỗi bản dịch")
+    qa = add("qa", _cmd_qa, "kiểm tra chất lượng và phát hiện lỗi bản dịch")
+    qa.add_argument(
+        "--guard",
+        action="store_true",
+        help="chạy quét ảo giác sâu bằng LLM Hallucination Guard trên các dòng đã dịch",
+    )
+    qa.add_argument(
+        "--limit",
+        type=int,
+        help="giới hạn số dòng thoại cần quét ảo giác bằng LLM",
+    )
 
     export = add("export", _cmd_export, "xuất bản dịch ra TSV để review hoặc chỉnh sửa")
     export.add_argument("-o", "--output", help="đường dẫn tệp TSV xuất ra")
