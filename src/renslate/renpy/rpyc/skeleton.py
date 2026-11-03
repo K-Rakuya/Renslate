@@ -20,6 +20,19 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
     ui_strings: list[tuple[str, int, str]] = []
     seen_ui: set[str] = set()
 
+    from renslate.core.textio import read_text_file
+    from renslate.renpy.parser import parse_string_line
+
+    if tl_root.is_dir():
+        for existing_rpy in tl_root.rglob("*.rpy"):
+            try:
+                for line in read_text_file(existing_rpy).lines:
+                    p = parse_string_line(line, "old")
+                    if p:
+                        seen_ui.add(p[1])
+            except Exception:
+                pass
+
     for rel_path, script in extracted.items():
         source_rpy_name = Path(rel_path).with_suffix(".rpy")
         parts = source_rpy_name.parts
@@ -31,10 +44,11 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
 
         if target_file.is_file() and target_file.stat().st_size > 0:
             generated_files.append(target_file)
-            for s in script.strings:
-                if s.text not in seen_ui:
-                    seen_ui.add(s.text)
-                    ui_strings.append((s.filename, s.linenumber, s.text))
+            if script.dialogue and script.strings:
+                for s in script.strings:
+                    if s.text not in seen_ui:
+                        seen_ui.add(s.text)
+                        ui_strings.append((s.filename, s.linenumber, s.text))
             continue
 
         lines: list[str] = []
@@ -63,15 +77,19 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
             generated_files.append(target_file)
         elif script.strings:
             str_lines = [f"translate {target_lang} strings:", ""]
+            has_new = False
             for s in script.strings:
-                escaped = quote_python_text(s.text)
-                str_lines.append(f"    # {s.filename}:{s.linenumber}")
-                str_lines.append(f'    old "{escaped}"')
-                str_lines.append('    new ""')
-                str_lines.append("")
-                seen_ui.add(s.text)
-            target_file.write_text("\n".join(str_lines), encoding="utf-8")
-            generated_files.append(target_file)
+                if s.text not in seen_ui:
+                    escaped = quote_python_text(s.text)
+                    str_lines.append(f"    # {s.filename}:{s.linenumber}")
+                    str_lines.append(f'    old "{escaped}"')
+                    str_lines.append('    new ""')
+                    str_lines.append("")
+                    seen_ui.add(s.text)
+                    has_new = True
+            if has_new:
+                target_file.write_text("\n".join(str_lines), encoding="utf-8")
+                generated_files.append(target_file)
 
         if script.dialogue and script.strings:
             for s in script.strings:
@@ -79,8 +97,8 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
                     seen_ui.add(s.text)
                     ui_strings.append((s.filename, s.linenumber, s.text))
 
+    ui_file = tl_root / "ui_strings.rpy"
     if ui_strings:
-        ui_file = tl_root / "ui_strings.rpy"
         existing_text = ui_file.read_text(encoding="utf-8") if ui_file.is_file() else ""
         if existing_text:
             new_strings = [
@@ -111,6 +129,12 @@ def synthesize_translation_skeletons(game_dir: Path | str, target_lang: str) -> 
                 lines.append("")
             ui_file.write_text("\n".join(lines), encoding="utf-8")
             generated_files.append(ui_file)
+    elif ui_file.is_file() and ui_file.stat().st_size > 0:
+        generated_files.append(ui_file)
+
+    from renslate.renpy.extract import deduplicate_tl_strings
+
+    deduplicate_tl_strings(tl_root, target_lang)
 
     return generated_files
 

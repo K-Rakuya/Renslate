@@ -221,3 +221,46 @@ translate vietnamese strings:
     # Empty second translate block was purged
     assert action_content.count("translate vietnamese strings:") == 1
 
+
+def test_deduplicate_purges_duplicate_strings_across_screens_and_ui_strings(tmp_path: Path) -> None:
+    from renslate.renpy.extract import deduplicate_tl_strings
+
+    root = tmp_path / "game_project"
+    game_dir = root / "game"
+    tl_dir = game_dir / "tl" / "vietnamese"
+    tl_dir.mkdir(parents=True)
+
+    # screens.rpy defines "Options"
+    (tl_dir / "screens.rpy").write_text(
+        """\
+translate vietnamese strings:
+
+    # screens.rpy:49
+    old "Options"
+    new "Tùy chọn"
+""",
+        encoding="utf-8",
+    )
+
+    # ui_strings.rpy also defines "Options"
+    (tl_dir / "ui_strings.rpy").write_text(
+        """\
+translate vietnamese strings:
+
+    # ui_strings.rpy:2296
+    old "Options"
+    new "Tùy chọn"
+""",
+        encoding="utf-8",
+    )
+
+    removed = deduplicate_tl_strings(tl_dir, "vietnamese")
+    assert removed == 1
+
+    screens_content = (tl_dir / "screens.rpy").read_text(encoding="utf-8")
+    ui_content = (tl_dir / "ui_strings.rpy").read_text(encoding="utf-8")
+
+    assert screens_content.count('old "Options"') == 1
+    assert ui_content.count('old "Options"') == 0
+
+
