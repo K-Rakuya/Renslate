@@ -24,7 +24,7 @@ Toàn bộ các kỹ sư và AI agents khi tham gia phát triển, bảo trì ho
 - **Không bị ràng buộc bởi logic cũ:** Nếu một giải pháp thiết kế mới từ đầu (ground-up clean architecture) mang lại hiệu quả thực sự vượt trội, rõ ràng và thanh thoát, **hãy mạnh dạn đổi mới và thay thế toàn bộ logic cũ**. Tuyệt đối không giữ lại hay vá víu những heuristic chắp vá đã bộc lộ sự yếu kém.
 
 ## 5. CHỈ DÙNG DỰ ÁN THỰC TẾ ĐỂ CHẤM ĐIỂM CHẤT LƯỢNG (REAL-WORLD BENCHMARK VERIFICATION)
-- Mọi đánh giá chất lượng phân tích, độ chính xác của trích xuất quan hệ và hiệu quả dịch thuật **bắt buộc phải được chạy và thẩm định trực tiếp trên cây thư mục của các tựa game Ren'Py thực tế** (ví dụ: `CommercialVN-Alpha`, `CommercialVN-Beta`).
+- Mọi đánh giá chất lượng phân tích, độ chính xác của trích xuất quan hệ và hiệu quả dịch thuật **bắt buộc phải được chạy và thẩm định trực tiếp trên cây thư mục của các tựa game Ren'Py thực tế** (bao gồm cả các bản phân phối kịch bản nguồn .rpy và các bản đóng gói bytecode .rpyc thương mại).
 - Các bộ test nhân tạo (synthetic unit tests) được dùng để bảo toàn hồi quy (regression) và tính chất toán học, nhưng thước đo năng lực tối thượng của hệ thống là khả năng vận hành mượt mà, chính xác trên các game thương mại thật.
 
 ## 6. KHÔNG GIỮ RÁC CŨ & TRIỆT TIÊU ĐƯỜNG DẪN FALLBACK LÙI (ZERO LEGACY DEAD CODE & ZERO STEALTH FALLBACK)

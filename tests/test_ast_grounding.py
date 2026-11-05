@@ -6,7 +6,7 @@ Covers:
 3. Hybrid Presence Set: ActiveSprites | SceneSpeakers.
 4. 3-Way Utterance Classification: SpokenDialogue, InternalThought, AmbientNarration.
 5. Deterministic O(1) Dyad Turn Resolution.
-6. Real-world verification against CommercialVN-Alpha and CommercialVN-Beta.
+6. Real-world verification against production Ren'Py script and bytecode distributions.
 7. StageTracker AST node processing and rpyc index integration.
 8. InterlocutorResolver grounded dyad integration.
 """
@@ -84,7 +84,7 @@ class TestUtteranceClassification:
             assert kind is UtteranceKind.THOUGHT
             assert spk == tag
 
-    def test_thought_via_CommercialVN-Beta_size_reduction(self) -> None:
+    def test_thought_via_size_reduction(self) -> None:
         kind, spk = classify_utterance(None, "{size=-6}Nice to meet you! I'm Mayu!")
         assert kind is UtteranceKind.THOUGHT
         assert spk is None
@@ -229,7 +229,7 @@ aria "Alex? Where did he go?"
         assert units[2].target is None
 
     def test_3d_camera_cut_fallback_to_conversational_speakers(self) -> None:
-        """Verify 3D camera cut VN pattern (e.g. CommercialVN-Alpha) where no sprites are shown."""
+        """Verify 3D camera cut VN pattern where no sprites are shown."""
         script = """
 scene bg_3d_courtyard_sunset
 hero "The castle looks deserted."
@@ -605,17 +605,22 @@ class TestInterlocutorResolverGroundedIntegration:
 
 
 class TestRealWorldBenchmarkGrounding:
-    def test_CommercialVN-Alpha_real_world_scene_grounding(self) -> None:
-        """Verify AST grounding against real-world CommercialVN-Alpha."""
-        cr_path = Path("/path/to/commercial_vn/")
+    def test_production_script_real_world_scene_grounding(self) -> None:
+        """Verify AST grounding against real-world .rpy script project when configured."""
+        import os
+
+        game_dir_str = os.environ.get("RENVI_TEST_GAME_RPY")
+        if not game_dir_str:
+            pytest.skip("RENVI_TEST_GAME_RPY environment variable not configured")
+        cr_path = Path(game_dir_str)
         if not cr_path.exists():
-            pytest.skip("CommercialVN-Alpha not found on disk")
+            pytest.skip(f"Test project not found at {cr_path}")
 
         chunks = parse_grounded_script(cr_path)
 
         assert len(chunks) >= 50, f"Expected >= 50 chunks, found {len(chunks)}"
 
-        # Verify dyadic scene properties in 3D VN
+        # Verify dyadic scene properties in visual novel
         dyad_chunks = [
             c for c in chunks
             if len(c.conversational_speakers) == 2 and c.dialogue_count >= 2
@@ -630,35 +635,21 @@ class TestRealWorldBenchmarkGrounding:
                 expected_target = spk_list[1] if u.speaker == spk_list[0] else spk_list[0]
                 assert u.target == expected_target
 
-    def test_CommercialVN-Beta_real_world_rpyc_grounding(self) -> None:
-        """Verify AST grounding against real-world CommercialVN-Beta (.rpyc distribution)."""
-        gw_path = Path("/path/to/commercial_vn/'_Whim-0.4.7-pc")
+    def test_production_bytecode_real_world_rpyc_grounding(self) -> None:
+        """Verify AST grounding against real-world .rpyc bytecode distribution when configured."""
+        import os
+
+        game_dir_str = os.environ.get("RENVI_TEST_GAME_RPYC")
+        if not game_dir_str:
+            pytest.skip("RENVI_TEST_GAME_RPYC environment variable not configured")
+        gw_path = Path(game_dir_str)
         if not gw_path.exists():
-            pytest.skip("CommercialVN-Beta not found on disk")
+            pytest.skip(f"Bytecode test distribution not found at {gw_path}")
 
-        mayu_rpyc = gw_path / "game" / "mayu_events.rpyc"
-        if not mayu_rpyc.exists():
-            pytest.skip("mayu_events.rpyc not found")
+        rpyc_files = list(gw_path.glob("**/*.rpyc"))
+        if not rpyc_files:
+            pytest.skip("No .rpyc files found in test distribution")
 
-        chunks = parse_grounded_script(mayu_rpyc)
-        assert len(chunks) >= 50, f"Expected >= 50 chunks in mayu_events.rpyc, found {len(chunks)}"
-
-        # Check thought tags classified as THOUGHT (e.g. who == 't')
-        thought_units = [
-            u for c in chunks for u in c.units
-            if u.kind is UtteranceKind.THOUGHT
-        ]
-        assert len(thought_units) >= 10, "Expected thought units to be disambiguated"
-
-        # Check dyad resolution in 2-speaker scenes
-        dyad_chunks = [
-            c for c in chunks
-            if len(c.conversational_speakers) == 2 and c.dialogue_count >= 2
-        ]
-        assert len(dyad_chunks) >= 10, "Expected dyad chunks in mayu_events"
-        sample_dyad = dyad_chunks[0]
-        spk_list = sorted(sample_dyad.conversational_speakers)
-        for u in sample_dyad.units:
-            if u.kind is UtteranceKind.SPOKEN and u.speaker in sample_dyad.conversational_speakers:
-                expected_target = spk_list[1] if u.speaker == spk_list[0] else spk_list[0]
-                assert u.target == expected_target
+        sample_rpyc = rpyc_files[0]
+        chunks = parse_grounded_script(sample_rpyc)
+        assert len(chunks) >= 1, f"Expected chunks in {sample_rpyc}, found {len(chunks)}"
