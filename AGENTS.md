@@ -1,7 +1,7 @@
 # RENVI ARCHITECTURAL QUALITY STANDARDS & CODE CONVENTIONS
 # TIÊU CHUẨN CHẤT LƯỢNG & QUY TẮC PHÁP LỆNH KỸ THUẬT RENVI (2026+)
 
-Toàn bộ các kỹ sư và AI agents khi tham gia phát triển, bảo trì hoặc mở rộng codebase Renvi (`renslate`) BẮT BUỘC phải tuân thủ nghiêm ngặt 7 Trụ cột Tiêu chuẩn Chất lượng dưới đây:
+Toàn bộ các kỹ sư và AI agents khi tham gia phát triển, bảo trì hoặc mở rộng codebase Renvi (`renslate`) BẮT BUỘC phải tuân thủ nghiêm ngặt 8 Trụ cột Tiêu chuẩn Chất lượng & Pháp lệnh Kỹ thuật dưới đây:
 
 ---
 
@@ -42,3 +42,8 @@ Toàn bộ các kỹ sư và AI agents khi tham gia phát triển, bảo trì ho
 - **Bảo đảm Tính chất Toán học:** Mọi cặp xưng hô đối ứng tiếng Việt bắt buộc phải thỏa mãn tính khép kín đại số (Algebraic Reciprocal Invariant):
   $$\Pi(\mathbf{R}_{(B, A)}, g_B, g_A) \equiv \sigma(\Pi(\mathbf{R}_{(A, B)}, g_A, g_B))$$
 - Bảo đảm 100% test suite chạy xanh (0 failure), linter `ruff` sạch sẽ không cảnh báo (All checks passed!).
+
+## 8. TRIỆT ĐỂ BẢO VỆ DỮ LIỆU & VÔ DANH HÓA TOÀN BỘ BENCHMARK (ZERO BENCHMARK LEAKAGE & CLEAN TRACKING)
+- **Nghiêm cấm tuyệt đối** việc đưa bất kỳ thông tin, tên dự án, đường dẫn tuyệt đối/cục bộ, hay định danh cụ thể của bất kỳ tựa game/dữ liệu nào đã dùng để huấn luyện và kiểm nghiệm vào tracking hoặc lịch sử của toàn bộ repo (kể cả trong tài liệu kỹ thuật, mã nguồn, tests, scripts, commit messages hay git metadata).
+- **100% kiểm thử thực tế phải trừu tượng hóa và nạp động:** Toàn bộ đường dẫn game thực tế phục vụ benchmark bắt buộc phải được nạp động thông qua biến môi trường độc lập (ví dụ: `RENVI_TEST_GAME_RPY`, `RENVI_TEST_GAME_RPYC`), không commit hay hardcode bất kỳ thư mục game cá nhân nào vào repo.
+- **Vô danh hóa toàn diện tài liệu & script:** Mọi tài liệu kỹ thuật (docs/ADRs), mã kiểm thử (tests), script khởi chạy (launchers) bắt buộc sử dụng danh xưng trừu tượng trung tính (`CommercialVN-Alpha`, `CommercialVN-Beta`, `/path/to/...`), không bao giờ để lộ cây thư mục lưu trữ hay tên dự án cá nhân.
