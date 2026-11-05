@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from renslate.core.config import Config
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     SceneMacroContext,
     SceneSummary,
     Unit,
 )
+from renslate.domain.relational import project_relational_vector
 from renslate.engine.context.macro import infer_scene_cues
 from renslate.engine.context.prompt_frame import (
     _format_pronoun_pair,
@@ -28,6 +28,7 @@ from renslate.engine.context.resolver import (
     _is_scene_boundary,
     harmonize_reciprocal_rules,
     invert_reciprocal_pronoun_rule,
+    resolve_dyad,
 )
 from renslate.engine.context.tokens import estimate_tokens
 from renslate.engine.tm import FuzzyMatch
@@ -41,6 +42,7 @@ __all__ = [
     "ContextBuilder",
     "ContextBundle",
     "LookbackItem",
+    "build_transgraph_frame",
 ]
 
 _invert_reciprocal_pronoun_rule = invert_reciprocal_pronoun_rule
@@ -100,11 +102,10 @@ class LookbackItem:
 class ContextBundle:
     """Encapsulates all contextual domain assets assembled for a translation prompt.
 
-    Provides a unified container for glossary matches, character profiles, scene context,
+    Provides a unified container for character profiles, scene context,
     lookback conversation history, fuzzy matches, relationship graph, and interlocutor resolver.
     """
 
-    glossary_matches: Sequence[GlossaryEntry] = ()
     characters: dict[str, CharacterProfile] = field(default_factory=dict)
     scene_summary: SceneSummary | None = None
     scene_macro: SceneMacroContext | None = None
@@ -112,20 +113,273 @@ class ContextBundle:
     fuzzy_matches: dict[str, list[FuzzyMatch]] = field(default_factory=dict)
     graph: RelationshipGraph | None = None
     resolver: Any | None = None
+    transgraph: bool | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.glossary_matches, tuple):
-            object.__setattr__(self, "glossary_matches", tuple(self.glossary_matches))
         if not isinstance(self.lookback, tuple):
             object.__setattr__(self, "lookback", tuple(self.lookback))
+
+
+def build_transgraph_frame(
+    batch_units: Sequence[Unit],
+    characters: Mapping[str, CharacterProfile],
+    graph: RelationshipGraph | None = None,
+    scene_macro: SceneMacroContext | None = None,
+    *,
+    scene_spec: str = "default",
+) -> str:
+    """TransGraph micro-framing builder injecting only active interaction subgraphs G_active."""
+    if scene_spec != "default":
+        resolved_scene_spec = scene_spec
+    elif scene_macro is not None:
+        resolved_scene_spec = (
+            getattr(scene_macro, "label", None)
+            or getattr(scene_macro, "scene_id", None)
+            or getattr(scene_macro, "location", None)
+            or "default"
+        )
+    else:
+        resolved_scene_spec = "default"
+
+    active_characters: set[str] = set()
+
+    for u in batch_units:
+        spk = getattr(u, "speaker", None)
+        if spk and isinstance(spk, str):
+            spk_clean = spk.strip()
+            if spk_clean.lower() not in _NON_DIALOGUE_TAGS:
+                active_characters.add(spk_clean)
+
+        lis = getattr(u, "listener", None)
+        if lis and isinstance(lis, str):
+            lis_clean = lis.strip()
+            if lis_clean.lower() not in _NON_DIALOGUE_TAGS:
+                active_characters.add(lis_clean)
+
+        tgt = getattr(u, "target", None)
+        if tgt and isinstance(tgt, str):
+            tgt_clean = tgt.strip()
+            is_grounding = hasattr(u, "active_presence") or (
+                hasattr(u, "kind")
+                and getattr(u.kind, "__class__", None).__name__ == "UtteranceKind"
+            )
+            is_known_char = (
+                tgt_clean in characters
+                or tgt_clean.lower() in {k.lower() for k in characters}
+            )
+            if (is_grounding or is_known_char) and tgt_clean.lower() not in _NON_DIALOGUE_TAGS:
+                active_characters.add(tgt_clean)
+
+    if len(active_characters) < 2 and characters:
+        active_spk_set = {
+            getattr(u, "speaker", "").strip()
+            for u in batch_units
+            if getattr(u, "speaker", None)
+            and getattr(u, "speaker", "").strip().lower() not in _NON_DIALOGUE_TAGS
+        }
+        known_names: dict[str, str] = {}
+        for k, p in characters.items():
+            d_name = (
+                getattr(p, "display_name", None)
+                or (p.get("display_name") if isinstance(p, dict) else None)
+                or k
+            )
+            known_names[k] = str(d_name)
+            known_names[str(d_name)] = str(d_name)
+
+        present_chars = None
+        if scene_macro and getattr(scene_macro, "active_characters", None):
+            present_chars = set(scene_macro.active_characters)
+
+        resolver = InterlocutorResolver()
+        prev_u = None
+        for u in batch_units:
+            u_spk = getattr(u, "speaker", None)
+            if u_spk and u_spk.strip().lower() not in _NON_DIALOGUE_TAGS:
+                resolved = resolver.resolve(
+                    unit=u,
+                    prev_unit=prev_u,
+                    active_speakers=active_spk_set,
+                    known_names=known_names,
+                    present_characters=present_chars,
+                )
+                if resolved and resolved.listener:
+                    lis_c = resolved.listener.strip()
+                    if lis_c.lower() not in _NON_DIALOGUE_TAGS:
+                        active_characters.add(lis_c)
+            prev_u = u
+
+        if len(active_characters) == 1 and scene_macro and getattr(scene_macro, "active_characters", None):
+            single_spk = next(iter(active_characters))
+            dyad_listener = resolve_dyad(single_spk, scene_macro.active_characters)
+            if dyad_listener and dyad_listener.lower() not in _NON_DIALOGUE_TAGS:
+                active_characters.add(dyad_listener)
+
+    canonical_active: set[str] = set()
+    for raw_c in active_characters:
+        matched = False
+        for k, prof in characters.items():
+            prof_tag = str(getattr(prof, "tag", None) or (prof.get("tag") if isinstance(prof, dict) else None) or k)
+            prof_disp = str(getattr(prof, "display_name", None) or (prof.get("display_name") if isinstance(prof, dict) else None) or "")
+            if raw_c.lower() in (k.lower(), prof_tag.lower(), prof_disp.lower()):
+                canonical_active.add(k)
+                matched = True
+                break
+        if not matched:
+            canonical_active.add(raw_c)
+
+    profile_lines: list[str] = []
+    for c in sorted(canonical_active):
+        p = characters.get(c)
+        if p is None:
+            p = characters.get(c.lower())
+        if p is None:
+            for cand in characters.values():
+                cand_tag = str(getattr(cand, "tag", None) or (cand.get("tag") if isinstance(cand, dict) else None) or "")
+                cand_disp = str(getattr(cand, "display_name", None) or (cand.get("display_name") if isinstance(cand, dict) else None) or "")
+                if (cand_tag and cand_tag.lower() == c.lower()) or (cand_disp and cand_disp.lower() == c.lower()):
+                    p = cand
+                    break
+
+        gender = (
+            getattr(p, "gender", None)
+            or (p.get("gender") if isinstance(p, dict) else None)
+            or "unknown"
+        )
+        role = (
+            getattr(p, "role", None)
+            or (p.get("role") if isinstance(p, dict) else None)
+            or getattr(p, "display_name", None)
+            or (p.get("display_name") if isinstance(p, dict) else None)
+            or "Speaker"
+        )
+        profile_lines.append(f"- {c} ({gender}, {role})")
+
+    dyad_lines: list[str] = []
+    sorted_chars = sorted(canonical_active)
+    for i, c1 in enumerate(sorted_chars):
+        for c2 in sorted_chars[i + 1 :]:
+            p1 = characters.get(c1) or characters.get(c1.lower())
+            p2 = characters.get(c2) or characters.get(c2.lower())
+            gender1 = getattr(p1, "gender", None) or (p1.get("gender") if isinstance(p1, dict) else None) or "unknown"
+            gender2 = getattr(p2, "gender", None) or (p2.get("gender") if isinstance(p2, dict) else None) or "unknown"
+
+            rule_fwd: tuple[str, str] | None = None
+            rule_rev: tuple[str, str] | None = None
+
+            if graph is not None:
+                if hasattr(graph, "get_edge"):
+                    edge_12 = graph.get_edge(c1, c2)
+                    edge_21 = graph.get_edge(c2, c1)
+                    if edge_12 is not None:
+                        if edge_12.speaker_pronoun and edge_12.listener_pronoun:
+                            rule_fwd = (edge_12.speaker_pronoun, edge_12.listener_pronoun)
+                        elif hasattr(edge_12, "vector") and edge_12.vector is not None:
+                            rule_fwd = project_relational_vector(edge_12.vector, gender1, gender2)
+                    if edge_21 is not None:
+                        if edge_21.speaker_pronoun and edge_21.listener_pronoun:
+                            rule_rev = (edge_21.speaker_pronoun, edge_21.listener_pronoun)
+                        elif hasattr(edge_21, "vector") and edge_21.vector is not None:
+                            rule_rev = project_relational_vector(edge_21.vector, gender2, gender1)
+                elif isinstance(graph, Mapping):
+                    raw_fwd = graph.get((c1, c2))
+                    raw_rev = graph.get((c2, c1))
+                    if raw_fwd is not None:
+                        rule_fwd = (
+                            (str(raw_fwd[0]).strip(), str(raw_fwd[1]).strip())
+                            if isinstance(raw_fwd, (list, tuple))
+                            else tuple(s.strip() for s in str(raw_fwd).split("-", 1))  # type: ignore[assignment]
+                        )
+                    if raw_rev is not None:
+                        rule_rev = (
+                            (str(raw_rev[0]).strip(), str(raw_rev[1]).strip())
+                            if isinstance(raw_rev, (list, tuple))
+                            else tuple(s.strip() for s in str(raw_rev).split("-", 1))  # type: ignore[assignment]
+                        )
+
+            if rule_fwd is None and p1 is not None:
+                pm1 = getattr(p1, "pronoun_map", None) or (p1.get("pronoun_map") if isinstance(p1, dict) else None)
+                if pm1 and isinstance(pm1, Mapping):
+                    val = (
+                        pm1.get(c2)
+                        or pm1.get(c2.lower())
+                        or (pm1.get(getattr(p2, "display_name", "")) if hasattr(p2, "display_name") else None)
+                        or (pm1.get(getattr(p2, "display_name", "").lower()) if hasattr(p2, "display_name") else None)
+                    )
+                    if not val:
+                        is_c2_mc = (
+                            c2.lower() in _PROTAGONIST_TAGS
+                            or (hasattr(p2, "role") and "protagonist" in (p2.role or "").lower())
+                        )
+                        if is_c2_mc:
+                            val = pm1.get("mc") or pm1.get("player")
+                    if val:
+                        if isinstance(val, (list, tuple)):
+                            rule_fwd = (str(val[0]).strip(), str(val[1]).strip())
+                        elif "-" in str(val):
+                            parts = [s.strip() for s in str(val).split("-", 1)]
+                            rule_fwd = (parts[0], parts[1])
+
+            if rule_rev is None and p2 is not None:
+                pm2 = getattr(p2, "pronoun_map", None) or (p2.get("pronoun_map") if isinstance(p2, dict) else None)
+                if pm2 and isinstance(pm2, Mapping):
+                    val = (
+                        pm2.get(c1)
+                        or pm2.get(c1.lower())
+                        or (pm2.get(getattr(p1, "display_name", "")) if hasattr(p1, "display_name") else None)
+                        or (pm2.get(getattr(p1, "display_name", "").lower()) if hasattr(p1, "display_name") else None)
+                    )
+                    if not val:
+                        is_c1_mc = (
+                            c1.lower() in _PROTAGONIST_TAGS
+                            or (hasattr(p1, "role") and "protagonist" in (p1.role or "").lower())
+                        )
+                        if is_c1_mc:
+                            val = pm2.get("mc") or pm2.get("player")
+                    if val:
+                        if isinstance(val, (list, tuple)):
+                            rule_rev = (str(val[0]).strip(), str(val[1]).strip())
+                        elif "-" in str(val):
+                            parts = [s.strip() for s in str(val).split("-", 1)]
+                            rule_rev = (parts[0], parts[1])
+
+            if rule_fwd is None and rule_rev is not None:
+                rule_fwd = (rule_rev[1], rule_rev[0])
+            elif rule_rev is None and rule_fwd is not None:
+                rule_rev = (rule_fwd[1], rule_fwd[0])
+            elif rule_fwd is None and rule_rev is None:
+                rule_fwd = ("tôi", "bạn")
+                rule_rev = ("bạn", "tôi")
+
+            assert rule_fwd is not None and rule_rev is not None
+            dyad_lines.append(
+                f"- {c1} -> {c2}: ({rule_fwd[0]}, {rule_fwd[1]}) | {c2} -> {c1}: ({rule_rev[0]}, {rule_rev[1]})"
+            )
+
+    frame = [
+        f"[ACTIVE SCENE: {resolved_scene_spec}]",
+        "[ACTIVE INTERACTION SUBGRAPH]",
+        "Active Personas:",
+        *(profile_lines or ["- None (Ambient monologue/narration)"]),
+        "Active Pronoun Invariants:",
+        *(dyad_lines or ["- No active interlocutor dyad"]),
+    ]
+    return "\n".join(frame)
 
 
 class ContextBuilder:
     """Builds optimized prompts respecting token budgets and context priorities."""
 
-    def __init__(self, config: Config, custom_style_guide: str = "") -> None:
+    def __init__(
+        self,
+        config: Config,
+        custom_style_guide: str = "",
+        *,
+        use_transgraph: bool = False,
+    ) -> None:
         self.config = config
         self.custom_style_guide = custom_style_guide
+        self.use_transgraph = use_transgraph
 
     def build_system_prompt(self) -> str:
         """Compose the cached system prompt with style guidelines."""
@@ -196,7 +450,6 @@ class ContextBuilder:
     def build_user_prompt(
         self,
         batch_units: Sequence[Unit],
-        glossary_matches: Sequence[GlossaryEntry] = (),
         characters: dict[str, CharacterProfile] | None = None,
         scene_summary: SceneSummary | None = None,
         lookback: Sequence[LookbackItem] = (),
@@ -206,11 +459,11 @@ class ContextBuilder:
         scene_macro: SceneMacroContext | None = None,
         bundle: ContextBundle | None = None,
         retry_feedback: str = "",
+        *,
+        transgraph: bool | None = None,
     ) -> str:
         """Assemble the user prompt prioritizing critical context within token limits."""
         if bundle is not None:
-            if not glossary_matches and bundle.glossary_matches:
-                glossary_matches = bundle.glossary_matches
             if characters is None and bundle.characters:
                 characters = bundle.characters
             scene_summary = scene_summary or bundle.scene_summary
@@ -220,6 +473,8 @@ class ContextBuilder:
             fuzzy_matches = fuzzy_matches if fuzzy_matches is not None else bundle.fuzzy_matches
             graph = graph or bundle.graph
             resolver = resolver or bundle.resolver
+            if transgraph is None and getattr(bundle, "transgraph", None) is not None:
+                transgraph = bundle.transgraph
 
         characters = characters or {}
         fuzzy_matches = fuzzy_matches or {}
@@ -433,7 +688,41 @@ class ContextBuilder:
                     char_info += f" | Xưng hô: {'; '.join(pronoun_parts)}"
             char_lines.append(char_info)
 
-        if char_lines and available_budget > 80:
+        resolved_macro: SceneMacroContext | None = scene_macro
+        if resolved_macro is None and scene_summary is not None:
+            if isinstance(scene_summary, SceneMacroContext):
+                resolved_macro = scene_summary
+            else:
+                loc = getattr(scene_summary, "location", "")
+                atmos = getattr(scene_summary, "atmosphere", "")
+                resolved_macro = SceneMacroContext(
+                    scene_id=scene_summary.scene_id,
+                    label=scene_summary.label,
+                    first_seq=scene_summary.first_seq,
+                    last_seq=scene_summary.last_seq,
+                    summary=scene_summary.summary,
+                    location=loc,
+                    atmosphere=atmos,
+                )
+
+        active_transgraph = (
+            transgraph
+            if transgraph is not None
+            else self.use_transgraph
+        )
+
+        if active_transgraph and available_budget > 80:
+            tg_frame = build_transgraph_frame(
+                batch_units=batch_units,
+                characters=characters,
+                graph=graph,
+                scene_macro=resolved_macro,
+            )
+            tokens = estimate_tokens(tg_frame)
+            if tokens <= available_budget:
+                sections.append(tg_frame)
+                available_budget -= tokens
+        elif char_lines and available_budget > 80:
             ch_block = "HỒ SƠ NHÂN VẬT & QUY TẮC XƯNG HÔ:\n" + "\n".join(char_lines)
             tokens = estimate_tokens(ch_block)
             if tokens <= available_budget:
@@ -460,25 +749,9 @@ class ContextBuilder:
         # =========================================================================
 
         # 3.1 Scene Macro Context (Semi-stable across scene)
-        resolved_macro: SceneMacroContext | None = scene_macro
-        if resolved_macro is None and scene_summary is not None:
-            if isinstance(scene_summary, SceneMacroContext):
-                resolved_macro = scene_summary
-            else:
-                loc = getattr(scene_summary, "location", "")
-                atmos = getattr(scene_summary, "atmosphere", "")
-                resolved_macro = SceneMacroContext(
-                    scene_id=scene_summary.scene_id,
-                    label=scene_summary.label,
-                    first_seq=scene_summary.first_seq,
-                    last_seq=scene_summary.last_seq,
-                    summary=scene_summary.summary,
-                    location=loc,
-                    atmosphere=atmos,
-                )
-
         if (
-            resolved_macro is not None
+            not active_transgraph
+            and resolved_macro is not None
             and (resolved_macro.summary or resolved_macro.label or not resolved_macro.is_empty())
             and available_budget > 80
         ):
@@ -490,6 +763,17 @@ class ContextBuilder:
                 atmos = atmos or inferred_atmos
                 resolved_macro = resolved_macro.with_updates(location=loc, atmosphere=atmos)
 
+            sc_block = resolved_macro.format_prompt_header()
+            tokens = estimate_tokens(sc_block)
+            if tokens <= available_budget:
+                sections.append(sc_block)
+                available_budget -= tokens
+        elif (
+            active_transgraph
+            and resolved_macro is not None
+            and (resolved_macro.summary or getattr(resolved_macro, "atmosphere", ""))
+            and available_budget > 80
+        ):
             sc_block = resolved_macro.format_prompt_header()
             tokens = estimate_tokens(sc_block)
             if tokens <= available_budget:
@@ -605,7 +889,7 @@ class ContextBuilder:
                     if rule_b_to_a:
                         relational_lines.append(_format_relational_rule(p_b, p_a, rule_b_to_a))
 
-        if relational_lines and available_budget > 80:
+        if not active_transgraph and relational_lines and available_budget > 80:
             rel_block = "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN:\n" + "\n".join(relational_lines)
             tokens = estimate_tokens(rel_block)
             if tokens <= available_budget:

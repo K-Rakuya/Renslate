@@ -45,9 +45,6 @@ class Project:
     def characters_path(self) -> Path:
         return self.work_dir / "characters.json"
 
-    @property
-    def glossary_path(self) -> Path:
-        return self.work_dir / "glossary.json"
 
     @classmethod
     def create(

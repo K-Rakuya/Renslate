@@ -8,6 +8,7 @@ from renslate.engine.context.builder import (
     ContextBuilder,
     ContextBundle,
     LookbackItem,
+    build_transgraph_frame,
 )
 from renslate.engine.context.macro import (
     assemble_scene_macro_context,
@@ -64,6 +65,7 @@ __all__ = [
     "_is_scene_boundary",
     "_strip_outer_quotes",
     "assemble_scene_macro_context",
+    "build_transgraph_frame",
     "estimate_tokens",
     "format_rich_dialogue_line",
     "infer_scene_cues",

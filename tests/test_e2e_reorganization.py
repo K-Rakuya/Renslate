@@ -47,10 +47,8 @@ from renslate.context import ContextBuilder, LookbackItem, estimate_tokens
 from renslate.db import Database, utc_timestamp
 from renslate.errors import RenslateError
 from renslate.extract import extract, extract_project
-from renslate.glossary import Glossary
 from renslate.mask import mask, reconcile_translation, unmask, validate_raw
 from renslate.models import (
-    GlossaryEntry,
     Origin,
     Status,
     Unit,
@@ -359,10 +357,9 @@ class TestTier1SubpackageReorganization:
 
     @pytest.mark.skipif(not HAS_SUBPACKAGES, reason="Requires M1 subpackage migration")
     def test_subpackage_engine_modules(self) -> None:
-        """Verify renslate.engine exports translate, llm, context, qa, glossary, tm, analyze."""
+        """Verify renslate.engine exports translate, llm, context, qa, tm, analyze."""
         import renslate.engine.analyze
         import renslate.engine.context
-        import renslate.engine.glossary
         import renslate.engine.llm
         import renslate.engine.qa
         import renslate.engine.tm
@@ -373,7 +370,6 @@ class TestTier1SubpackageReorganization:
         assert hasattr(renslate.engine.llm, "LLMClient")
         assert hasattr(renslate.engine.context, "ContextBuilder")
         assert hasattr(renslate.engine.qa, "QAChecker")
-        assert hasattr(renslate.engine.glossary, "Glossary")
         assert hasattr(renslate.engine.tm, "TranslationMemory")
         assert hasattr(renslate.engine.analyze, "run_analysis")
         assert hasattr(renslate.engine.tsvio, "export_tsv")
@@ -476,7 +472,6 @@ class TestTier1TopLevelReexportsAndShims:
             "LLMClient",
             "ContextBuilder",
             "QAChecker",
-            "Glossary",
         ]:
             assert hasattr(renslate, symbol), f"Top-level export missing: {symbol}"
 
@@ -1298,15 +1293,14 @@ class TestTier3CrossFeatureInteractions:
         model = runner.detect_server_model(mock_server, "fallback")
         assert model == "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
 
-    def test_context_builder_with_glossary_lookback_and_budget(self) -> None:
-        """Verify ContextBuilder integrates Glossary matching, lookback, and knapsack budget."""
+    def test_context_builder_with_lookback_and_budget(self) -> None:
+        """Verify ContextBuilder integrates lookback and knapsack budget."""
         builder = ContextBuilder(Config())
-        glossary = Glossary([GlossaryEntry("academy", "học viện")])
         lookback = [LookbackItem("Elena", "Welcome!", "Chào mừng!")]
 
         u = make_unit("s:curr", 2, "Welcome to the academy!", speaker="Elena")
         prompt = builder.build_user_prompt(
-            [u], lookback=lookback, glossary_matches=glossary.entries
+            [u], lookback=lookback
         )
 
         assert "THUẬT NGỮ BẮT BUỘC" not in prompt

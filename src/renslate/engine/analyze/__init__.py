@@ -1,4 +1,4 @@
-"""Analysis subpackage: stylometrics, sampling, persona inference, tropes, and pipeline."""
+"""Analysis subpackage: stylometrics, sampling, persona inference, tropes, topology, and distillation."""
 
 from __future__ import annotations
 
@@ -6,6 +6,17 @@ from renslate.core.db import (
     load_characters_from_json,
     save_characters_to_json,
     sync_characters,
+)
+from renslate.engine.analyze.distill import (
+    DISTILLATION_SYSTEM_PROMPT,
+    DistillationResult,
+    DistilledCharacter,
+    DistilledRelationship,
+    apply_distillation_results,
+    build_distillation_prompt,
+    clean_json_markdown_fence,
+    parse_distillation_json,
+    run_pass2_distillation,
 )
 from renslate.engine.analyze.persona import (
     PERSONA_SYSTEM_PROMPT,
@@ -33,6 +44,16 @@ from renslate.engine.analyze.pipeline import (
 )
 from renslate.engine.analyze.sampling import stratified_speaker_samples
 from renslate.engine.analyze.stylometrics import StylometricSummary, extract_stylometrics
+from renslate.engine.analyze.topology import (
+    SalienceWindow,
+    TopologyAnalysis,
+    build_topology_analysis,
+    compute_cooccurrence_matrix,
+    detect_dynamic_name_patterns,
+    discover_topological_protagonist,
+    isolate_dyad_salience_windows,
+    isolate_salience_windows,
+)
 from renslate.engine.analyze.tropes import (
     COLLECTIVE_TAGS,
     INNER_MONOLOGUE_TAGS,
@@ -46,6 +67,7 @@ from renslate.engine.analyze.tropes import (
 
 __all__ = [
     "COLLECTIVE_TAGS",
+    "DISTILLATION_SYSTEM_PROMPT",
     "INNER_MONOLOGUE_TAGS",
     "NARRATOR_TAGS",
     "NON_HUMAN_TAGS",
@@ -53,12 +75,24 @@ __all__ = [
     "PERSONA_SYSTEM_PROMPT",
     "PROTAGONIST_TAGS",
     "ArchetypeThresholds",
+    "DistillationResult",
+    "DistilledCharacter",
+    "DistilledRelationship",
+    "SalienceWindow",
     "StylometricSummary",
+    "TopologyAnalysis",
+    "apply_distillation_results",
     "bootstrap_characters_with_llm",
+    "build_distillation_prompt",
     "build_persona_user_prompt",
+    "build_topology_analysis",
+    "clean_json_markdown_fence",
     "collect_character_narration_context",
     "collect_incoming_vocatives",
+    "compute_cooccurrence_matrix",
     "detect_archetype",
+    "detect_dynamic_name_patterns",
+    "discover_topological_protagonist",
     "extract_character_definitions",
     "extract_interaction_network",
     "extract_interactive_dialogue_exchanges",
@@ -72,9 +106,13 @@ __all__ = [
     "infer_semantic_relationship",
     "is_collective_entity",
     "is_non_human_or_meta",
+    "isolate_dyad_salience_windows",
+    "isolate_salience_windows",
     "load_characters_from_json",
+    "parse_distillation_json",
     "resolve_pronoun_pair_from_relationship",
     "run_analysis",
+    "run_pass2_distillation",
     "save_characters_to_json",
     "segment_scenes",
     "stratified_speaker_samples",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from renslate.config import Config
 from renslate.context import ContextBuilder, LookbackItem, estimate_tokens
-from renslate.models import CharacterProfile, GlossaryEntry, Status, Unit, UnitKind
+from renslate.models import CharacterProfile, Status, Unit, UnitKind
 
 
 def test_estimate_tokens() -> None:
@@ -37,7 +37,6 @@ def test_user_prompt_with_all_priorities() -> None:
         masked_source="Hello ⟦V1⟧!",
     )
 
-    glossary = [GlossaryEntry("Eileen", "Eileen", notes="Tên riêng")]
     chars = {
         "e": CharacterProfile(
             tag="e",
@@ -51,13 +50,11 @@ def test_user_prompt_with_all_priorities() -> None:
 
     user_prompt = builder.build_user_prompt(
         batch_units=[unit],
-        glossary_matches=glossary,
         characters=chars,
         lookback=lookback,
     )
 
     assert "d:intro" in user_prompt
-    assert "GLOSSARY" not in user_prompt
     assert "HỒ SƠ NHÂN VẬT" in user_prompt
     assert "Heroine" in user_prompt
     assert "NGỮ CẢNH CÁC CÂU THOẠI LIỀN TRƯỚC" in user_prompt
@@ -67,11 +64,9 @@ def test_empty_glossary_candidate_is_injected_as_candidate() -> None:
     cfg = Config()
     builder = ContextBuilder(cfg)
     unit = Unit("d:test", UnitKind.DIALOGUE, 1, "Hello", Status.PENDING)
-    glossary = [GlossaryEntry("CandidateTerm", "", kind="candidate"), GlossaryEntry("Sect", "Tông môn")]
-    prompt = builder.build_user_prompt(batch_units=[unit], glossary_matches=glossary)
-    assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY)" not in prompt
+    prompt = builder.build_user_prompt(batch_units=[unit])
+    assert "THUẬT NGỮ BẮT BUỘC" not in prompt
     assert "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT" not in prompt
-    assert "GLOSSARY" not in prompt
 
 
 def test_relational_pronouns_with_pseudo_speakers_and_multi_characters() -> None:

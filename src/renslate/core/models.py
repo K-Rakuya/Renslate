@@ -121,21 +121,135 @@ class TMEntry:
     updated_at: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class GlossaryEntry:
-    """Fixed glossary term definition."""
+class KinshipKind(str, enum.Enum):
+    """Categorical kinship or pledged bond between two interlocutors."""
 
-    term: str
-    translation: str
-    kind: str = "general"
-    case_sensitive: bool = False
-    aliases: tuple[str, ...] = ()
-    notes: str = ""
+    NONE = "NONE"
+    SIBLING = "SIBLING"
+    PARENT_CHILD = "PARENT_CHILD"
+    AVUNCULAR = "AVUNCULAR"
+    GRAND_RELATION = "GRAND_RELATION"
+    ROMANTIC_COUPLE = "ROMANTIC_COUPLE"
+    MENTOR_DISCIPLE = "MENTOR_DISCIPLE"
+    SOVEREIGN_SUBJECT = "SOVEREIGN_SUBJECT"
+    SWORN_ALLIANCE = "SWORN_ALLIANCE"
+
+    def inverse(self) -> KinshipKind:
+        """Invert kinship bond."""
+        return self
+
+    @classmethod
+    def from_str(cls, value: str) -> KinshipKind:
+        """Parse string to KinshipKind case-insensitively and resiliently."""
+        norm = str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
+        try:
+            return cls(norm)
+        except ValueError:
+            if norm in cls.__members__:
+                return cls[norm]
+            return cls.NONE
+
+
+@dataclass(frozen=True, slots=True)
+class RelationalVector:
+    """4-dimensional relational state vector governing interpersonal discourse.
+
+    R_(A, B) = <Kinship, Delta_Hierarchy, Affinity, Register> in:
+    K x [-1.0, 1.0] x [-1.0, 1.0] x [0.0, 1.0]
+    """
+
+    kinship: KinshipKind = KinshipKind.NONE
+    delta_hierarchy: float = 0.0  # [-1.0, 1.0], anti-symmetric (H_A - H_B)
+    affinity: float = 0.0  # [-1.0, 1.0], symmetric baseline (intimacy vs hostility)
+    register: float = 0.5  # [0.0, 1.0], situational formality (0=vulgar, 1=ceremonial)
+
+    def __post_init__(self) -> None:
+        raw_kin = self.kinship
+        if not isinstance(raw_kin, KinshipKind):
+            object.__setattr__(self, "kinship", KinshipKind.from_str(str(raw_kin)))
+
+        try:
+            dh = float(self.delta_hierarchy)
+        except (TypeError, ValueError):
+            dh = 0.0
+        try:
+            aff = float(self.affinity)
+        except (TypeError, ValueError):
+            aff = 0.0
+        try:
+            reg = float(self.register)
+        except (TypeError, ValueError):
+            reg = 0.5
+
+        clamped_dh = max(-1.0, min(1.0, dh))
+        clamped_aff = max(-1.0, min(1.0, aff))
+        clamped_reg = max(0.0, min(1.0, reg))
+
+        object.__setattr__(self, "delta_hierarchy", clamped_dh)
+        object.__setattr__(self, "affinity", clamped_aff)
+        object.__setattr__(self, "register", clamped_reg)
+
+    def inverted(self) -> RelationalVector:
+        """Compute the reciprocal relational vector R_(B, A) = inv(R_(A, B))."""
+        return RelationalVector(
+            kinship=self.kinship.inverse(),
+            delta_hierarchy=-self.delta_hierarchy,
+            affinity=self.affinity,
+            register=self.register,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize 4D relational vector to dictionary."""
+        return {
+            "kinship": self.kinship.value,
+            "delta_hierarchy": self.delta_hierarchy,
+            "affinity": self.affinity,
+            "register": self.register,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RelationalVector:
+        """Deserialize dictionary to RelationalVector."""
+        if not isinstance(data, (dict, Mapping)):
+            msg = f"Expected dict or Mapping for RelationalVector, got {type(data).__name__}"
+            raise TypeError(msg)
+        return cls(
+            kinship=KinshipKind.from_str(str(data.get("kinship", "NONE"))),
+            delta_hierarchy=float(data.get("delta_hierarchy", 0.0)),
+            affinity=float(data.get("affinity", 0.0)),
+            register=float(data.get("register", 0.5)),
+        )
+
+
+def _infer_vector_from_legacy_edge(
+    kind: RelationshipKind, spk: str = "", lis: str = ""
+) -> RelationalVector:
+    """Infer 4D relational vector from legacy RelationshipKind and pronouns."""
+    if kind == RelationshipKind.ROMANCE:
+        return RelationalVector(kinship=KinshipKind.ROMANTIC_COUPLE, delta_hierarchy=0.2, affinity=0.8, register=0.4)
+    if kind == RelationshipKind.FAMILY_SIBLING:
+        dh = 0.3 if spk in ("anh", "chị") else (-0.3 if spk == "em" else 0.0)
+        return RelationalVector(kinship=KinshipKind.SIBLING, delta_hierarchy=dh, affinity=0.6, register=0.3)
+    if kind == RelationshipKind.FAMILY_ELDER:
+        return RelationalVector(kinship=KinshipKind.PARENT_CHILD, delta_hierarchy=0.8, affinity=0.5, register=0.5)
+    if kind == RelationshipKind.MENTOR_DISCIPLE:
+        return RelationalVector(kinship=KinshipKind.MENTOR_DISCIPLE, delta_hierarchy=0.6, affinity=0.5, register=0.6)
+    if kind == RelationshipKind.SERVANT_MASTER:
+        return RelationalVector(kinship=KinshipKind.SOVEREIGN_SUBJECT, delta_hierarchy=-0.7, affinity=0.2, register=0.8)
+    if kind == RelationshipKind.SUPERIOR_SUBORDINATE:
+        return RelationalVector(kinship=KinshipKind.NONE, delta_hierarchy=0.5, affinity=0.1, register=0.7)
+    if kind == RelationshipKind.FRIENDSHIP_CLOSE:
+        return RelationalVector(kinship=KinshipKind.NONE, delta_hierarchy=0.0, affinity=0.7, register=0.3)
+    if kind == RelationshipKind.FRIENDSHIP_CASUAL:
+        return RelationalVector(kinship=KinshipKind.NONE, delta_hierarchy=0.0, affinity=0.4, register=0.5)
+    if kind == RelationshipKind.RIVAL_HOSTILE:
+        return RelationalVector(kinship=KinshipKind.NONE, delta_hierarchy=0.0, affinity=-0.8, register=0.2)
+    return RelationalVector(kinship=KinshipKind.NONE, delta_hierarchy=0.0, affinity=0.0, register=0.5)
 
 
 @dataclass(frozen=True, slots=True)
 class RelationshipEdge:
-    """A directed relationship edge from source_tag to target_tag with addressing pronouns."""
+    """A directed relationship edge from source_tag to target_tag with addressing pronouns and 4D vector."""
 
     source_tag: str
     target_tag: str
@@ -145,6 +259,17 @@ class RelationshipEdge:
     confidence: float = 1.0
     source_type: str = "manual"
     notes: str = ""
+    vector: RelationalVector | None = None
+
+    def __post_init__(self) -> None:
+        if self.vector is None:
+            object.__setattr__(
+                self,
+                "vector",
+                _infer_vector_from_legacy_edge(
+                    self.kind, self.speaker_pronoun, self.listener_pronoun
+                ),
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize relationship edge to dictionary."""
@@ -157,6 +282,11 @@ class RelationshipEdge:
             "confidence": self.confidence,
             "source_type": self.source_type,
             "notes": self.notes,
+            "vector": self.vector.to_dict(),
+            "kinship": self.vector.kinship.value,
+            "delta_hierarchy": self.vector.delta_hierarchy,
+            "affinity": self.vector.affinity,
+            "register": self.vector.register,
         }
 
     @classmethod
@@ -177,15 +307,31 @@ class RelationshipEdge:
             msg = f"Expected RelationshipKind or str for kind, got {type(kind_raw).__name__}"
             raise TypeError(msg)
 
+        spk_pro = str(data.get("speaker_pronoun", ""))
+        lis_pro = str(data.get("listener_pronoun", ""))
+
+        if "vector" in data and isinstance(data["vector"], (dict, Mapping)):
+            vector = RelationalVector.from_dict(data["vector"])
+        elif any(k in data for k in ("kinship", "delta_hierarchy", "affinity", "register")):
+            vector = RelationalVector(
+                kinship=KinshipKind.from_str(str(data.get("kinship", "NONE"))),
+                delta_hierarchy=float(data.get("delta_hierarchy", 0.0)),
+                affinity=float(data.get("affinity", 0.0)),
+                register=float(data.get("register", 0.5)),
+            )
+        else:
+            vector = _infer_vector_from_legacy_edge(kind, spk_pro, lis_pro)
+
         return cls(
             source_tag=source_tag,
             target_tag=target_tag,
             kind=kind,
-            speaker_pronoun=str(data.get("speaker_pronoun", "")),
-            listener_pronoun=str(data.get("listener_pronoun", "")),
+            speaker_pronoun=spk_pro,
+            listener_pronoun=lis_pro,
             confidence=float(data.get("confidence", 1.0)),
             source_type=str(data.get("source_type", "manual")),
             notes=str(data.get("notes", "")),
+            vector=vector,
         )
 
 
@@ -467,9 +613,10 @@ __all__ = [
     "ApplyTarget",
     "BatchLog",
     "CharacterProfile",
-    "GlossaryEntry",
+    "KinshipKind",
     "Origin",
     "QAIssue",
+    "RelationalVector",
     "RelationshipEdge",
     "RelationshipKind",
     "SceneMacroContext",

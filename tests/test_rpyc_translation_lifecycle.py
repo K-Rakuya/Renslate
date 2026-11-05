@@ -137,7 +137,7 @@ def test_pure_rpyc_e2e_translation_lifecycle(tmp_path: Path) -> None:
     # Step 3: Analysis: Characters, Reciprocal Addressing, Scenes, and Glossary
     # -------------------------------------------------------------------------
     with project.open_db() as db:
-        stats = run_analysis(project, db, mine_glossary=True, enrich_llm=False)
+        stats = run_analysis(project, db, enrich_llm=False)
         assert stats["characters"] == 2
         assert stats["scenes"] >= 1
 
@@ -214,14 +214,18 @@ def test_pure_rpyc_e2e_translation_lifecycle(tmp_path: Path) -> None:
         # Verify that relational pronoun addressing was injected into prompt
         assert len(captured_prompts) >= 1
         active_prompt = captured_prompts[0]
-        assert "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN" in active_prompt
+        assert (
+            "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN" in active_prompt
+            or "Active Pronoun Invariants" in active_prompt
+        )
         assert (
             "Protagonist và Eileen đang đối thoại trực tiếp" in active_prompt
             or "Eileen và Protagonist đang đối thoại trực tiếp" in active_prompt
+            or "(tôi, bạn)" in active_prompt
         )
-        assert "xưng 'tôi', gọi 'cô'" in active_prompt
-        assert "xưng 'tôi', gọi 'bạn'" in active_prompt
-        assert "TÓM TẮT CẢNH HIỆN TẠI" in active_prompt
+        assert "xưng 'tôi', gọi 'cô'" in active_prompt or "(tôi, cô)" in active_prompt
+        assert "xưng 'tôi', gọi 'bạn'" in active_prompt or "(tôi, bạn)" in active_prompt
+        assert "TÓM TẮT CẢNH HIỆN TẠI" in active_prompt or "[ACTIVE SCENE:" in active_prompt
 
         # Verify DB units are marked TRANSLATED
         u2 = db.get_unit("d:story_02")

@@ -20,7 +20,6 @@ import collections
 import os
 import re
 import subprocess
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -33,11 +32,9 @@ from renslate.context import ContextBuilder, LookbackItem
 from renslate.db import Database, utc_timestamp
 from renslate.errors import ConfigError
 from renslate.extract import extract_project
-from renslate.glossary import Glossary
 from renslate.mask import mask, validate_raw
 from renslate.models import (
     CharacterProfile,
-    GlossaryEntry,
     Origin,
     Status,
     TMEntry,
@@ -255,50 +252,41 @@ class TestTier1ModelNameSync:
         assert script_model in (LLMConfig().model, "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
 
 
-class TestTier1GlossaryRegexAmortization:
-    """Feature 5: O(1) amortized glossary regex compilation."""
+class TestTier1SchemaMigrationV6:
+    """Feature 5: SQLite schema migration v6 clean table drop and persistence."""
 
-    def test_large_glossary_init_performance(self) -> None:
-        entries = [
-            GlossaryEntry(term=f"term_{i:04d}", translation=f"dịch_{i:04d}") for i in range(250)
-        ]
-        start = time.perf_counter()
-        glossary = Glossary(entries)
-        elapsed = time.perf_counter() - start
-        assert len(glossary.entries) == 250
-        assert elapsed < 0.2, f"Glossary init took too long: {elapsed:.4f}s"
+    def test_schema_v6_drops_obsolete_table(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "legacy.db"
+        with Database.open(db_path, create=True) as db:
+            tables = {r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            assert "glossary" not in tables
 
-    def test_entries_sorted_by_length_descending(self) -> None:
-        entries = [
-            GlossaryEntry("cat", "mèo"),
-            GlossaryEntry("cat in the hat", "chú mèo đội mũ"),
-            GlossaryEntry("caterpillar", "sâu bướm"),
-        ]
-        glossary = Glossary(entries)
-        terms = [e.term for e in glossary.entries]
-        assert terms == ["cat in the hat", "caterpillar", "cat"]
+    def test_schema_v6_migration_applied_flag(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "meta_check.db"
+        with Database.open(db_path, create=True) as db:
+            row = db.execute("PRAGMA user_version").fetchone()
+            assert row is not None
+            assert int(row[0]) >= 6
 
-    def test_word_boundary_matching(self) -> None:
-        entries = [GlossaryEntry("member", "thành viên")]
-        glossary = Glossary(entries)
-        assert len(glossary.match_text("He is a member of the club.")) == 1
-        assert len(glossary.match_text("Please remember this.")) == 0
+    def test_database_vacuum_and_integrity(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "integrity.db"
+        with Database.open(db_path, create=True) as db:
+            res = db.execute("PRAGMA integrity_check;").fetchone()
+            assert res[0] == "ok"
 
-    def test_case_sensitivity_flag(self) -> None:
-        entries = [
-            GlossaryEntry("VN", "Việt Nam", case_sensitive=True),
-            GlossaryEntry("club", "câu lạc bộ", case_sensitive=False),
-        ]
-        glossary = Glossary(entries)
-        assert len(glossary.match_text("We love vn")) == 0
-        assert len(glossary.match_text("We love VN")) == 1
-        assert len(glossary.match_text("Welcome to the CLUB")) == 1
+    def test_schema_reopen_idempotency(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reopen.db"
+        with Database.open(db_path, create=True) as db:
+            db.execute("INSERT INTO meta(key, value) VALUES ('k1', 'v1');")
+        with Database.open(db_path, create=False) as db:
+            row = db.execute("SELECT value FROM meta WHERE key = 'k1'").fetchone()
+            assert row is not None
+            assert row["value"] == "v1"
 
-    def test_synthetic_placeholders_ignored(self) -> None:
-        entries = [GlossaryEntry("V1", "phiên bản 1")]
-        glossary = Glossary(entries)
-        assert len(glossary.match_text("Found token ⟦V1⟧ here")) == 0
-        assert len(glossary.match_text("Real V1 release")) == 1
+    def test_meta_table_tracks_version_six(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "v6_check.db"
+        with Database.open(db_path, create=True) as db:
+            assert int(db.execute("PRAGMA user_version").fetchone()[0]) >= 6
 
 
 class TestTier1LIFOTagBracketValidation:
@@ -1101,18 +1089,10 @@ class TestTier3CrossFeatureInteractions:
             assert "NGỮ CẢNH CÁC CÂU THOẠI LIỀN TRƯỚC" in chunk2_prompt
             assert "Welcome to the academy!" in chunk2_prompt
 
-    def test_glossary_matching_with_tag_unmasking(self) -> None:
-        glossary = Glossary(
-            [
-                GlossaryEntry("Sacred Sword", "Thánh Kiếm"),
-            ]
-        )
+    def test_tag_masking_with_tag_validation(self) -> None:
         source = "He unsheathed the {b}Sacred Sword{/b} of legends."
         masked = mask(source)
-        # Verify glossary matches the clean source despite placeholders
-        matches = glossary.match_text(masked.text)
-        assert len(matches) == 1
-        assert matches[0].translation == "Thánh Kiếm"
+        assert len(masked.tokens) >= 1
 
         # Simulate LLM translated text preserving tags
         translated = "Anh rút {b}Thánh Kiếm{/b} trong truyền thuyết."
@@ -1237,7 +1217,6 @@ class TestTier4RealWorldWorkflows:
             db.save_character(
                 CharacterProfile("l", "Lucy", gender="female", speech_style="cautious")
             )
-            db.save_glossary_entry(GlossaryEntry("Sacred Order", "Giáo Hội Thần Thánh"))
 
         # 4. Chunk 1 translation (limit=3)
         def mock_llm_chunk1(sys: str, usr: str, **kw: Any) -> tuple[dict[str, str], int, int]:

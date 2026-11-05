@@ -17,7 +17,7 @@ __all__ = [
     "detect_archetype",
 ]
 
-PROTAGONIST_TAGS = frozenset({"mc", "player", "hero", "protag", "protagonist", "main", "you"})
+PROTAGONIST_TAGS: frozenset[str] = frozenset()
 NARRATOR_TAGS = frozenset({"narrator", "narration", "none"})
 INNER_MONOLOGUE_TAGS = frozenset({"t", "th", "thought", "thoughts", "thinking"})
 COLLECTIVE_TAGS = frozenset(
@@ -86,59 +86,6 @@ NON_HUMAN_TAGS = frozenset(
 )
 NON_INTERACTION_TAGS = frozenset(NON_HUMAN_TAGS | {"none"})
 
-NOBILITY_KEYWORDS = frozenset(
-    {
-        "queen",
-        "king",
-        "prince",
-        "princess",
-        "lady",
-        "lord",
-        "noble",
-        "empress",
-        "duke",
-        "baron",
-        "nữ hoàng",
-        "hoàng đế",
-        "công chúa",
-    }
-)
-
-MILITARY_KEYWORDS = frozenset(
-    {
-        "knight",
-        "commander",
-        "captain",
-        "general",
-        "guard",
-        "soldier",
-        "warrior",
-        "hiệp sĩ",
-        "lính gác",
-        "chỉ huy",
-    }
-)
-
-SCHOLARLY_KEYWORDS = frozenset(
-    {
-        "mage",
-        "wizard",
-        "witch",
-        "priest",
-        "scholar",
-        "archmage",
-        "sorceress",
-        "deity",
-        "goddess",
-        "pháp sư",
-        "thầy",
-    }
-)
-
-MERCHANT_KEYWORDS = frozenset(
-    {"merchant", "trader", "innkeeper", "barman", "bartender", "thương nhân"}
-)
-
 
 @dataclass(frozen=True, slots=True)
 class ArchetypeThresholds:
@@ -166,6 +113,8 @@ def detect_archetype(
     stylometrics: StylometricSummary,
     display_name: str = "",
     thresholds: ArchetypeThresholds = _DEFAULT_THRESHOLDS,
+    *,
+    is_protagonist: bool = False,
 ) -> tuple[str, tuple[str, ...], str, str]:
     """Detect visual novel archetype, personality traits, tone, and socioeconomic status.
 
@@ -177,21 +126,25 @@ def detect_archetype(
     role_lower = role.lower().strip()
 
     # 1. Exact Meta Roles Check
-    if tag_lower in PROTAGONIST_TAGS or "protagonist" in role_lower:
+    if (
+        is_protagonist
+        or "protagonist" in role_lower
+        or ("nhân vật chính" in role_lower and "tuyến" not in role_lower)
+    ):
         return (
             "protagonist",
             ("thích nghi", "quyết đoán", "trung thực"),
             "Điềm đạm, tự nhiên, mang góc nhìn nhân vật chính.",
             "Nhân vật chính / Phiêu lưu giả (Protagonist)",
         )
-    if tag_lower in NARRATOR_TAGS:
+    if tag_lower in NARRATOR_TAGS or disp_lower in NARRATOR_TAGS or "narrator" in role_lower:
         return (
             "narrator",
             ("quan sát", "khách quan", "điềm tĩnh"),
             "Trung tính, truyền cảm, nhịp điệu đều đặn.",
             "Người dẫn chuyện (Narrator)",
         )
-    if tag_lower in INNER_MONOLOGUE_TAGS:
+    if tag_lower in INNER_MONOLOGUE_TAGS or disp_lower in INNER_MONOLOGUE_TAGS or "nội tâm" in role_lower:
         return (
             "inner_monologue",
             ("nội tâm", "suy tư", "nhạy bén"),
@@ -257,17 +210,20 @@ def detect_archetype(
         traits = ("trung tính", "hòa nhã")
         tone = "Tự nhiên, phù hợp với vai trò hỗ trợ cốt truyện."
 
-    # 3. Socioeconomic Status Cues
-    combined_text = f"{tag_lower} {disp_lower} {role_lower}"
-    if any(w in combined_text for w in NOBILITY_KEYWORDS):
-        status = "Quý tộc / Hoàng gia (Nobility)"
-    elif any(w in combined_text for w in MILITARY_KEYWORDS):
-        status = "Quân đội / Hiệp sĩ (Military)"
-    elif any(w in combined_text for w in SCHOLARLY_KEYWORDS):
-        status = "Học giả ma thuật / Giáo sĩ (Religious / Scholarly)"
-    elif any(w in combined_text for w in MERCHANT_KEYWORDS):
-        status = "Thương nhân / Tiểu thương (Merchant)"
-    else:
-        status = "Thường dân (Commoner)"
+    # 3. Socioeconomic Status Cues (strictly inferred from structured role; defaults to Commoner)
+    status = "Thường dân (Commoner)"
+    if role_lower:
+        if any(w in role_lower for w in ("nobility", "noble", "princess", "prince", "king", "queen", "ruler", "quý tộc", "hoàng")):
+            status = "Quý tộc / Hoàng gia (Nobility)"
+        elif any(w in role_lower for w in ("military", "knight", "commander", "captain", "soldier", "hiệp sĩ", "quân đội")):
+            status = "Quân đội / Hiệp sĩ (Military)"
+        elif any(w in role_lower for w in ("scholarly", "religious", "mage", "archmage", "scholar", "wizard", "pháp sư", "giáo sĩ")):
+            status = "Học giả ma thuật / Giáo sĩ (Religious / Scholarly)"
+        elif any(w in role_lower for w in ("merchant", "trader", "innkeeper", "bartender", "thương nhân", "tiểu thương")):
+            status = "Thương nhân / Tiểu thương (Merchant)"
+        elif any(w in role_lower for w in ("resident", "commoner", "thường dân", "villager", "farmer")):
+            status = "Thường dân (Commoner)"
+        else:
+            status = role.strip()
 
     return archetype, traits, tone, status

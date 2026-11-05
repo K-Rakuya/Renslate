@@ -648,6 +648,7 @@ def test_persona_fallback_conflicting_role_signals() -> None:
         stylometrics=sty_tsundere,
         role="Queen Empress of Darkness",
         display_name="Hero",
+        is_protagonist=True,
     )
     assert fb_mc["archetype"] == "protagonist"
 
@@ -773,7 +774,7 @@ def test_semantic_relationship_inference_adversarial_matrix() -> None:
     # 4. Infer character role NLP boundary conditions
     assert infer_character_role_nlp("t", 100, 1000) == "Độc thoại nội tâm (Inner Monologue)"
     assert infer_character_role_nlp("narrator", 100, 1000) == "Người dẫn chuyện (Narrator)"
-    assert infer_character_role_nlp("mc", 500, 1000) == "Nhân vật chính (Protagonist)"
+    assert infer_character_role_nlp("mc", 500, 1000, is_protagonist=True) == "Nhân vật chính (Protagonist)"
     assert infer_character_role_nlp("npc", 0, 1000) == ""
     assert infer_character_role_nlp("npc", 50, 0) == ""
     assert infer_character_role_nlp("side_char", 50, 1000) == "Nhân vật chính tuyến (Main Cast)"

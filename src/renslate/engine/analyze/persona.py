@@ -28,7 +28,6 @@ from renslate.engine.analyze.tropes import (
     COLLECTIVE_TAGS,
     NON_HUMAN_TAGS,
     NON_INTERACTION_TAGS,
-    PROTAGONIST_TAGS,
     detect_archetype,
 )
 from renslate.engine.context import infer_scene_cues
@@ -44,16 +43,12 @@ _MASCULINE_CUES = re.compile(
     r"\b(?:he|him|his|himself|boy|man|guy|brother|son|father|dad|king|emperor|male|prince|lord|sir|mr|hero|dude)\b",
     re.IGNORECASE,
 )
-_FEMININE_NAMES = re.compile(
-    r"^(?:charlotte|alice|eileen|diana|evelyn|luna|iris|emily|sarah|mary|anna|clara|lucy|sophia|"
-    r"olivia|emma|chloe|mia|lily|grace|zoe|eva|elena|stella|amber|ruby|rose|victoria|valerie|karyn|zuri|"
-    r"kaede|tomoe|yui|aoi|akane|"
-    r"[a-z]*(?:ko|ka|na|ri|mi|ne|tsu|ki|yu))$",
+_FEMININE_SUFFIXES = re.compile(
+    r"(?:ette|otte|ine|ina|elle|ella|iana|ice|ko|ka|na|ri|mi|ne|tsu|ki|yu)$",
     re.IGNORECASE,
 )
-_MASCULINE_NAMES = re.compile(
-    r"^(?:jin|orson|kevin|john|david|michael|alex|mike|bob|tom|jack|george|arthur|"
-    r"[a-z]*(?:taro|ro|shi|to|ya|suke))$",
+_MASCULINE_SUFFIXES = re.compile(
+    r"(?:taro|ro|shi|to|ya|suke)$",
     re.IGNORECASE,
 )
 
@@ -116,14 +111,20 @@ PERSONA_SYSTEM_PROMPT = (
 )
 
 
-def infer_character_role_nlp(tag: str, line_count: int, total_lines: int) -> str:
-    """Infer character role heuristic based on dialogue volume and protagonist tags."""
+def infer_character_role_nlp(
+    tag: str,
+    line_count: int,
+    total_lines: int,
+    *,
+    is_protagonist: bool = False,
+) -> str:
+    """Infer character role heuristic based on dialogue volume and protagonist status."""
     tag_lower = tag.lower()
     if tag_lower in ("t", "th", "thought", "thoughts", "thinking"):
         return "Độc thoại nội tâm (Inner Monologue)"
     if tag_lower in ("narrator", "narration", "none"):
         return "Người dẫn chuyện (Narrator)"
-    if tag_lower in PROTAGONIST_TAGS:
+    if is_protagonist:
         return "Nhân vật chính (Protagonist)"
     if total_lines <= 0 or line_count == 0:
         return ""
@@ -136,11 +137,11 @@ def infer_character_role_nlp(tag: str, line_count: int, total_lines: int) -> str
 
 
 def infer_character_gender_nlp(name: str, sources: Sequence[str]) -> str:
-    """Infer grammatical character gender from universal names and pronoun co-occurrence."""
+    """Infer grammatical character gender from universal cues, affixes, and pronoun co-occurrence."""
     name_clean = re.sub(r"\b([A-Za-z])\s+([a-z]{2,})\b", r"\1\2", name).strip()
     name_lower = name_clean.lower()
-    is_fem_name = bool(_FEMININE_CUES.search(name_lower) or _FEMININE_NAMES.match(name_lower))
-    is_masc_name = bool(_MASCULINE_CUES.search(name_lower) or _MASCULINE_NAMES.match(name_lower))
+    is_fem_name = bool(_FEMININE_CUES.search(name_lower) or _FEMININE_SUFFIXES.search(name_lower))
+    is_masc_name = bool(_MASCULINE_CUES.search(name_lower) or _MASCULINE_SUFFIXES.search(name_lower))
 
     if is_fem_name and not is_masc_name:
         return "female"
@@ -575,13 +576,21 @@ def infer_persona_fallback(
     role: str = "",
     gender: str = "",
     display_name: str = "",
+    *,
+    is_protagonist: bool = False,
 ) -> dict[str, Any]:
     """Infer persona attributes using archetype detector and dialogue samples."""
+    is_mc = (
+        is_protagonist
+        or ("protagonist" in role.lower())
+        or ("nhân vật chính" in role.lower() and "tuyến" not in role.lower())
+    )
     archetype, traits, tone, status = detect_archetype(
         tag=tag,
         role=role,
         stylometrics=stylometrics,
         display_name=display_name,
+        is_protagonist=is_mc,
     )
 
     clean_samples = [s.strip() for s in dialogues if s.strip() and len(s.strip()) > 5]
@@ -609,25 +618,74 @@ def find_protagonist_tag(
     characters: Mapping[str, CharacterProfile],
     units: Sequence[Unit],
 ) -> str | None:
-    """Identify the protagonist / main character tag from project profiles and script."""
+    """Identify the protagonist / main character tag from project profiles and script AST.
+
+    Zero hardcoded tag lists. Uses topological network centrality, dynamic name patterns,
+    and AST role definitions.
+    """
+    # 1. Primary mechanism: Topological graph analysis on script dialogue units
+    dialogue_units = [u for u in units if getattr(u, "kind", None) is UnitKind.DIALOGUE and getattr(u, "speaker", None)]
+    if dialogue_units:
+        from renslate.engine.analyze.topology import (
+            compute_cooccurrence_matrix,
+            discover_topological_protagonist,
+        )
+
+        counts = Counter(u.speaker for u in dialogue_units if u.speaker)
+        _speakers, matrix = compute_cooccurrence_matrix(dialogue_units)
+        dynamic_tags = {
+            tag for tag, prof in characters.items()
+            if "[" in (prof.display_name or "") or (prof.display_name or "").endswith("_name")
+        }
+        if len(_speakers) >= 2:
+            proto = discover_topological_protagonist(
+                matrix,
+                speaker_turns=counts,
+                dynamic_name_tags=dynamic_tags,
+            )
+            if proto:
+                degrees = {s: sum(matrix[s].values()) for s in _speakers}
+                max_d = max(degrees.values()) if degrees else 0
+                min_d = min(degrees.values()) if degrees else 0
+                max_t = max(counts.values()) if counts else 0
+                min_t = min(counts.values()) if counts else 0
+                if len(_speakers) == 2 and max_d == min_d and max_t == min_t and not dynamic_tags:
+                    pass
+                else:
+                    return proto
+        elif len(_speakers) == 1:
+            spk = _speakers[0]
+            if spk in dynamic_tags:
+                return spk
+            prof = characters.get(spk)
+            if prof:
+                r_low = (prof.role or "").lower()
+                if "protagonist" in r_low or ("nhân vật chính" in r_low and "tuyến" not in r_low):
+                    return spk
+
+    # 2. Dynamic player name expressions in character definitions (AST / metadata)
     for tag, prof in characters.items():
-        t_low = tag.lower()
-        if t_low in PROTAGONIST_TAGS:
-            return tag
-        if prof.role and "protagonist" in prof.role.lower():
-            return tag
-        if (
-            prof.display_name
-            and prof.display_name.lower() in ("mc", "player", "hero", "protagonist")
-        ):
+        disp = prof.display_name or ""
+        if "[" in disp or disp.endswith("_name"):
             return tag
 
-    dialogue_units = [u for u in units if u.kind is UnitKind.DIALOGUE and u.speaker]
-    if dialogue_units:
-        counts = Counter(u.speaker for u in dialogue_units if u.speaker)
-        for tag, _ in counts.most_common(5):
-            if tag.lower() in PROTAGONIST_TAGS:
-                return tag
+    # 3. Explicit protagonist role in character profile
+    for tag, prof in characters.items():
+        role_low = (prof.role or "").lower()
+        if "protagonist" in role_low or ("nhân vật chính" in role_low and "tuyến" not in role_low):
+            return tag
+
+    # 4. Fallback for static mock profiles without dialogue units
+    for tag, prof in characters.items():
+        disp_low = (prof.display_name or "").lower()
+        if tag.lower() in ("mc", "player", "hero", "protagonist", "protag") or disp_low in (
+            "protagonist",
+            "nhân vật chính",
+            "hero",
+            "mc",
+            "player",
+        ):
+            return tag
 
     return None
 

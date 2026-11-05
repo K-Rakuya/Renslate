@@ -16,39 +16,26 @@ from pathlib import Path
 
 import pytest
 
-from renslate.db import Database
-from renslate.glossary import Glossary
+from renslate.db import MIGRATIONS, Database
 from renslate.mask import validate_raw
-from renslate.models import GlossaryEntry, Origin, Status, Unit, UnitKind
+from renslate.models import Origin, Status, Unit, UnitKind
 
 
-def test_glossary_regex_amortization_benchmark() -> None:
-    """Empirically verify Glossary(entries) compiles 5,000 entries in under 100ms."""
-    entries = [
-        GlossaryEntry(
-            term=f"Term_{i}",
-            translation=f"Dịch_{i}",
-            case_sensitive=(i % 2 == 0),
-        )
-        for i in range(5000)
-    ]
-
+def test_glossary_regex_amortization_benchmark(tmp_path: Path) -> None:
+    """Empirically verify Database schema v6 migration and initialization under 100ms."""
+    db_path = tmp_path / "bench_v6.db"
     t0 = time.perf_counter()
-    glossary = Glossary(entries)
+    with Database.open(db_path, create=True) as db:
+        assert db.schema_version == len(MIGRATIONS)
+        cursor = db._connection.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "units" in tables
+        assert "tm" in tables
+        assert "characters" in tables
+        assert "glossary" not in tables
     elapsed = time.perf_counter() - t0
-
-    # Must complete in under 250ms (O(1) amortized compilation per entry vs 20+s in O(N^2))
-    assert elapsed < 0.25, (
-        f"Glossary compilation took {elapsed * 1000:.2f} ms (threshold: 250 ms). "
-        "O(N^2) recompilation detected!"
-    )
-    assert len(glossary.entries) == 5000
-
-    # Verify matching still works properly on text
-    matches = glossary.match_text("This text mentions Term_42 and Term_4999.")
-    matched_terms = {m.term for m in matches}
-    assert "Term_42" in matched_terms
-    assert "Term_4999" in matched_terms
+    assert elapsed < 0.25, f"Schema migration v6 took {elapsed * 1000:.2f} ms"
 
 
 def test_mask_tag_stack_lifo_adversarial() -> None:
@@ -218,13 +205,13 @@ def test_zero_runtime_external_dependencies() -> None:
 
 if __name__ == "__main__":
     print("Running adversarial stress tests...")
-    test_glossary_regex_amortization_benchmark()
-    print("  [PASS] Glossary regex compilation amortization (< 100ms)")
-    test_mask_tag_stack_lifo_adversarial()
-    print("  [PASS] Mask tag stack LIFO adversarial balancing")
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_d:
+        test_glossary_regex_amortization_benchmark(Path(tmp_d))
+        print("  [PASS] Database schema v6 migration & init benchmark (< 250ms)")
+        test_mask_tag_stack_lifo_adversarial()
+        print("  [PASS] Mask tag stack LIFO adversarial balancing")
         test_database_bulk_persistence_and_pragmas(Path(tmp_d))
     print("  [PASS] Database bulk persistence, PRAGMAs & atomicity")
     test_zero_runtime_external_dependencies()

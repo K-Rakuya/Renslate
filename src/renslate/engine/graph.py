@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from renslate.core.models import RelationshipEdge
+from renslate.core.models import RelationalVector, RelationshipEdge
 from renslate.core.textio import write_atomic
+from renslate.domain.relational import project_relational_vector
 
 if TYPE_CHECKING:
     from renslate.core.db import Database
@@ -140,6 +141,26 @@ class RelationshipGraph:
     ) -> tuple[RelationshipEdge | None, RelationshipEdge | None]:
         """Retrieve bilateral edges (a -> b, b -> a) in O(1) time."""
         return (self.get_edge(a, b), self.get_edge(b, a))
+
+    def get_relational_vector(self, source_tag: str, target_tag: str) -> RelationalVector | None:
+        """Retrieve the 4D relational vector between source_tag and target_tag, or None."""
+        edge = self.get_edge(source_tag, target_tag)
+        return edge.vector if edge is not None else None
+
+    def project_address(
+        self,
+        source_tag: str,
+        target_tag: str,
+        gender_src: str = "unknown",
+        gender_tgt: str = "unknown",
+    ) -> tuple[str, str]:
+        """Project addressing pronouns from source_tag to target_tag with algebraic reciprocity."""
+        edge = self.get_edge(source_tag, target_tag)
+        if edge is not None:
+            if edge.speaker_pronoun and edge.listener_pronoun:
+                return (edge.speaker_pronoun, edge.listener_pronoun)
+            return project_relational_vector(edge.vector, gender_src, gender_tgt)
+        return project_relational_vector(RelationalVector(), gender_src, gender_tgt)
 
     def get_neighbors(self, tag: str, direction: str = "both") -> set[str]:
         """Retrieve neighboring character tags connected by relationship edges."""
@@ -398,6 +419,8 @@ class RelationshipGraph:
         for edge in db.get_relationships():
             graph.add_edge(edge, overwrite_manual=True)
         return graph
+
+    load_from_db = from_db
 
     @classmethod
     def sync(

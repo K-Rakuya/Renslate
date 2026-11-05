@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 
-from renslate.core.models import GlossaryEntry, QAIssue
+from renslate.core.models import QAIssue
 from renslate.core.textio import normalize_nfc
 from renslate.renpy.mask import MaskedText, find_markup_error, validate
 
@@ -153,7 +152,6 @@ _ELLIPSIS_FIRST_PERSON_RE = re.compile(
 
 def is_non_translatable_text(
     stripped_text: str,
-    glossary_terms: set[str] | None = None,
 ) -> bool:
     """Check if stripped dialogue consists of onomatopoeia, sound effects, or character names."""
     s = stripped_text.strip()
@@ -167,9 +165,7 @@ def is_non_translatable_text(
         return True
     if _SOUND_EFFECT_RE.fullmatch(s):
         return True
-    if _STUTTER_NAME_RE.match(s):
-        return True
-    return bool(glossary_terms and s.strip("!.,?\"'").lower() in glossary_terms)
+    return bool(_STUTTER_NAME_RE.match(s))
 
 
 def clean_translation(
@@ -265,7 +261,6 @@ class QAChecker:
         source: str,
         masked: MaskedText | None,
         target: str,
-        glossary_matches: Sequence[GlossaryEntry] = (),
         speaker: str | None = None,
         pronoun_rules: tuple[str, str] | None = None,
     ) -> list[QAIssue]:
@@ -343,19 +338,15 @@ class QAChecker:
 
         raw_src = _PLACEHOLDER_STRIP_RE.sub("", _TAG_STRIP_RE.sub("", source)).strip()
         raw_tgt = _PLACEHOLDER_STRIP_RE.sub("", _TAG_STRIP_RE.sub("", target)).strip()
-        if raw_src.lower() == raw_tgt.lower() and not is_non_translatable_text(
-            raw_src, {g.term.lower() for g in glossary_matches}
-        ):
-            is_glossary = any(g.term.lower() == raw_src.lower() for g in glossary_matches)
-            if not is_glossary:
-                issues.append(
-                    QAIssue(
-                        uid,
-                        "identical_to_source",
-                        "warning",
-                        "Bản dịch trùng nguyên văn với văn bản gốc tiếng Anh.",
-                    )
+        if raw_src.lower() == raw_tgt.lower() and not is_non_translatable_text(raw_src):
+            issues.append(
+                QAIssue(
+                    uid,
+                    "identical_to_source",
+                    "warning",
+                    "Bản dịch trùng nguyên văn với văn bản gốc tiếng Anh.",
                 )
+            )
 
         src_len = len(source)
         tgt_len = len(target)
@@ -396,44 +387,6 @@ class QAChecker:
                 )
 
         target_norm = normalize_nfc(target).lower()
-        for g in glossary_matches:
-            if not g.translation.strip():
-                continue
-
-            candidates = [g.term] + [a for a in g.aliases if a.strip()]
-            flags = 0 if g.case_sensitive else re.IGNORECASE
-            source_has_term = any(
-                re.search(rf"(?<!\w){re.escape(cand)}(?!\w)", source, flags) for cand in candidates
-            )
-            if not source_has_term:
-                continue
-
-            g_trans = normalize_nfc(g.translation).lower()
-            if g_trans not in target_norm:
-                issues.append(
-                    QAIssue(
-                        uid,
-                        "glossary_violation",
-                        "warning",
-                        f"Thuật ngữ '{g.term}' thiếu bản dịch chuẩn '{g.translation}'.",
-                    )
-                )
-
-            for cand in candidates:
-                cand_lower = cand.lower()
-                if cand_lower == g_trans:
-                    continue
-                flags = 0 if g.case_sensitive else re.IGNORECASE
-                if re.search(rf"(?<!\w){re.escape(cand)}(?!\w)", target, flags):
-                    issues.append(
-                        QAIssue(
-                            uid,
-                            "untranslated_glossary_leakage",
-                            "warning",
-                            f"Thuật ngữ tiếng Anh '{cand}' bị rò rỉ nguyên văn trong bản dịch.",
-                        )
-                    )
-                    break
 
         has_ta = bool(re.search(r"(?<!\w)ta(?!\w)", target_norm))
         has_toi = bool(re.search(r"(?<!\w)tôi(?!\w)", target_norm))
@@ -512,45 +465,3 @@ class QAChecker:
 
         return issues
 
-
-_MARKUP_OR_PLACEHOLDER = re.compile(r"(\{[^{}]*\}|\[[^\[\]]*\]|⟦[^⟦⟧]*⟧)")
-
-
-def repair_glossary_leakage(text: str, glossary_matches: Sequence[GlossaryEntry]) -> str:
-    """Auto-replace leaked English glossary words with their designated translations.
-
-    Leaves all Ren'Py tags, variable interpolations, and placeholder tokens intact.
-    """
-    if not text or not glossary_matches:
-        return text
-
-    valid_entries = [g for g in glossary_matches if g.translation.strip()]
-    if not valid_entries:
-        return text
-
-    replacements: list[tuple[re.Pattern[str], str, int]] = []
-    for g in valid_entries:
-        for cand in [g.term] + [a for a in g.aliases if a.strip()]:
-            if cand.lower() == g.translation.strip().lower():
-                continue
-            flags = 0 if g.case_sensitive else re.IGNORECASE
-            pat = re.compile(rf"(?<!\w){re.escape(cand)}(?!\w)", flags)
-            replacements.append((pat, g.translation, len(cand)))
-
-    if not replacements:
-        return text
-
-    # Sort replacements by term length descending so longer phrases match first
-    replacements.sort(key=lambda x: x[2], reverse=True)
-
-    parts = _MARKUP_OR_PLACEHOLDER.split(text)
-    for i in range(0, len(parts), 2):
-        seg = parts[i]
-        if not seg:
-            continue
-        for pat, trans, _ in replacements:
-            if pat.search(seg):
-                seg = pat.sub(trans, seg)
-        parts[i] = seg
-
-    return "".join(parts)

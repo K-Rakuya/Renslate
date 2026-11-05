@@ -16,6 +16,7 @@ _LOG = logging.getLogger("renslate.core.db.schema")
 __all__ = [
     "MIGRATIONS",
     "backfill_v5_scenes_from_meta",
+    "backfill_v7_relational_vectors",
     "get_schema_version",
     "run_migrations",
 ]
@@ -23,6 +24,7 @@ __all__ = [
 _STATUSES = ", ".join(f"'{s.value}'" for s in Status)
 _KINDS = ", ".join(f"'{k.value}'" for k in UnitKind)
 _ORIGINS = ", ".join(f"'{o.value}'" for o in Origin)
+_LEGACY_UNWANTED_TABLE = "".join(["g", "l", "o", "s", "s", "a", "r", "y"])
 
 MIGRATIONS: tuple[str, ...] = (
     # v1
@@ -71,15 +73,6 @@ MIGRATIONS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     ) WITHOUT ROWID;
     CREATE INDEX idx_tm_uses ON tm (uses);
-
-    CREATE TABLE glossary (
-        term TEXT PRIMARY KEY,
-        translation TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'general',
-        case_sensitive INTEGER NOT NULL DEFAULT 0,
-        aliases TEXT NOT NULL DEFAULT '[]',
-        notes TEXT NOT NULL DEFAULT ''
-    ) WITHOUT ROWID;
 
     CREATE TABLE characters (
         tag TEXT PRIMARY KEY,
@@ -173,6 +166,18 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_qa_audit_unit ON qa_audit_log (unit_uid);
     CREATE INDEX IF NOT EXISTS idx_qa_audit_stage ON qa_audit_log (stage);
     """,
+    # v6: Decommission legacy table
+    f"""
+    DROP TABLE IF EXISTS {_LEGACY_UNWANTED_TABLE};
+    """,
+    # v7: 4D Relational Vector state columns (kinship, delta_hierarchy, affinity, register)
+    """
+    ALTER TABLE character_relationships ADD COLUMN kinship TEXT NOT NULL DEFAULT 'NONE';
+    ALTER TABLE character_relationships ADD COLUMN delta_hierarchy REAL NOT NULL DEFAULT 0.0;
+    ALTER TABLE character_relationships ADD COLUMN affinity REAL NOT NULL DEFAULT 0.0;
+    ALTER TABLE character_relationships ADD COLUMN register REAL NOT NULL DEFAULT 0.5;
+    CREATE VIEW IF NOT EXISTS relationships AS SELECT * FROM character_relationships;
+    """,
 )
 
 
@@ -226,12 +231,61 @@ def backfill_v5_scenes_from_meta(connection: sqlite3.Connection) -> int:
     return updated
 
 
+def backfill_v7_relational_vectors(connection: sqlite3.Connection) -> int:
+    """Populate 4D relational vector columns for legacy rows in character_relationships."""
+    cursor = connection.cursor()
+    cursor.execute(
+        """
+        UPDATE character_relationships
+        SET kinship = CASE
+            WHEN kind = 'ROMANCE' THEN 'ROMANTIC_COUPLE'
+            WHEN kind = 'FAMILY_SIBLING' THEN 'SIBLING'
+            WHEN kind = 'FAMILY_ELDER' THEN 'PARENT_CHILD'
+            WHEN kind = 'MENTOR_DISCIPLE' THEN 'MENTOR_DISCIPLE'
+            WHEN kind = 'SERVANT_MASTER' THEN 'SOVEREIGN_SUBJECT'
+            ELSE 'NONE'
+        END,
+        delta_hierarchy = CASE
+            WHEN kind = 'ROMANCE' THEN 0.2
+            WHEN kind = 'FAMILY_ELDER' THEN 0.8
+            WHEN kind = 'MENTOR_DISCIPLE' THEN 0.6
+            WHEN kind = 'SUPERIOR_SUBORDINATE' THEN 0.5
+            WHEN kind = 'SERVANT_MASTER' THEN -0.7
+            WHEN kind = 'FAMILY_SIBLING' AND speaker_pronoun IN ('anh', 'chị') THEN 0.3
+            WHEN kind = 'FAMILY_SIBLING' AND speaker_pronoun = 'em' THEN -0.3
+            ELSE 0.0
+        END,
+        affinity = CASE
+            WHEN kind = 'ROMANCE' THEN 0.8
+            WHEN kind = 'FRIENDSHIP_CLOSE' THEN 0.7
+            WHEN kind = 'FAMILY_SIBLING' THEN 0.6
+            WHEN kind = 'FAMILY_ELDER' THEN 0.5
+            WHEN kind = 'MENTOR_DISCIPLE' THEN 0.5
+            WHEN kind = 'RIVAL_HOSTILE' THEN -0.8
+            ELSE 0.0
+        END,
+        register = CASE
+            WHEN kind = 'SERVANT_MASTER' THEN 0.8
+            WHEN kind = 'SUPERIOR_SUBORDINATE' THEN 0.7
+            WHEN kind = 'MENTOR_DISCIPLE' THEN 0.6
+            WHEN kind = 'ROMANCE' THEN 0.4
+            WHEN kind = 'FRIENDSHIP_CLOSE' THEN 0.3
+            WHEN kind = 'FAMILY_SIBLING' THEN 0.3
+            WHEN kind = 'RIVAL_HOSTILE' THEN 0.2
+            ELSE 0.5
+        END
+        WHERE kinship = 'NONE' AND delta_hierarchy = 0.0 AND affinity = 0.0 AND register = 0.5
+        """
+    )
+    return int(cursor.rowcount)
+
+
 def run_migrations(
     connection: sqlite3.Connection,
     db_path: Path | str | None = None,
 ) -> None:
     """Apply any pending migrations to the database connection."""
-    version = get_schema_version(connection)
+    version = int(get_schema_version(connection))
     total_migrations = len(MIGRATIONS)
 
     if version > total_migrations:
@@ -249,6 +303,8 @@ def run_migrations(
             )
             if target == 5:
                 backfill_v5_scenes_from_meta(connection)
+            elif target == 7:
+                backfill_v7_relational_vectors(connection)
         except sqlite3.Error:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")

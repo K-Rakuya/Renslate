@@ -484,9 +484,9 @@ class InteractiveWizard:
                 options = [
                     (
                         "1",
-                        "Bắt đầu dịch tự động kèm Live Dashboard (tự động phân tích glossary)",
+                        "Bắt đầu dịch tự động kèm Live Dashboard",
                     ),
-                    ("2", "Phân tích và dịch Glossary & Nhân vật bằng LLM ngay bây giờ"),
+                    ("2", "Phân tích và thiết lập hồ sơ Nhân vật bằng LLM ngay bây giờ"),
                     ("3", "Thay đổi địa chỉ LLM Server"),
                     ("4", "Điều chỉnh chunk size & tham số"),
                     ("5", "Quay lại bước trích xuất"),
@@ -504,7 +504,7 @@ class InteractiveWizard:
                         db = self.project.open_db()
                         try:
                             bootstrap_if_needed(self.project, db, bootstrap=True)
-                            print(f"{C_GREEN}✓ Đã phân tích và dịch glossary & nhân vật.{C_RESET}")
+                            print(f"{C_GREEN}✓ Đã phân tích và thiết lập hồ sơ nhân vật.{C_RESET}")
                         finally:
                             db.close()
                 elif choice == "3":

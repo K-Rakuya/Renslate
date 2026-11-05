@@ -7,7 +7,6 @@ import dataclasses
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import time
@@ -25,12 +24,6 @@ from renslate.engine.analyze import (
     bootstrap_characters_with_llm,
     run_analysis,
     segment_scenes,
-)
-from renslate.engine.glossary import (
-    Glossary,
-    clean_glossary,
-    collect_term_examples,
-    translate_glossary_with_llm,
 )
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient
@@ -176,7 +169,7 @@ def bootstrap_if_needed(
     *,
     bootstrap: bool | None = None,
 ) -> None:
-    """Ensure characters, scenes, and glossary are initialized idempotently."""
+    """Ensure characters and scenes are initialized idempotently."""
     char_row = db.execute("SELECT COUNT(*) FROM characters").fetchone()
     char_count = char_row[0] if char_row else 0
     chars_file = project.work_dir / "characters.json"
@@ -199,8 +192,8 @@ def bootstrap_if_needed(
             and not db.get_meta("analysis_completed")
             and (project.root / "game").is_dir()
         ):
-            _LOG.info("Đang tự động phân tích nhân vật, phân cảnh và glossary...")
-            run_analysis(project, db, mine_glossary=True, enrich_llm=False)
+            _LOG.info("Đang tự động phân tích nhân vật và phân cảnh...")
+            run_analysis(project, db, enrich_llm=False)
 
     scene_row = db.execute("SELECT COUNT(*) FROM scenes").fetchone()
     scene_count = scene_row[0] if scene_row else 0
@@ -211,27 +204,9 @@ def bootstrap_if_needed(
                 for sc in scenes:
                     db.save_scene(sc)
 
-    glossary_file = project.work_dir / "glossary.json"
-    cur_glossary = db.get_glossary()
-    if not cur_glossary and glossary_file.is_file():
-        loaded_g = Glossary.load_file(glossary_file)
-        if loaded_g.entries:
-            loaded_g.save_db(db)
-            cur_glossary = loaded_g.entries
-            _LOG.info("Đã đồng bộ %d thuật ngữ từ %s.", len(cur_glossary), glossary_file.name)
-
     chars = db.get_characters()
-    char_names = {p.display_name.lower() for p in chars.values() if p.display_name} | set(
-        chars.keys()
-    )
-    cleaned_glossary = clean_glossary(cur_glossary, exclude_terms=char_names)
-    if len(cleaned_glossary) != len(cur_glossary) or any(g.case_sensitive for g in cur_glossary):
-        g_clean = Glossary(cleaned_glossary)
-        g_clean.save_file(glossary_file)
-        g_clean.save_db(db)
-        cur_glossary = cleaned_glossary
 
-    # Determine if characters or glossary need LLM bootstrapping
+    # Determine if characters need LLM bootstrapping
     force_bootstrap = bootstrap is True
     skip_bootstrap = bootstrap is False
     needs_char_bootstrap = bool(chars) and (
@@ -242,41 +217,12 @@ def bootstrap_if_needed(
             and any(not p.role and not p.speech_style for p in chars.values())
         )
     )
-    needs_gloss_bootstrap = force_bootstrap or (
-        not skip_bootstrap
-        and not db.get_meta("glossary_bootstrapped")
-        and any(not g.translation.strip() for g in cur_glossary)
-    )
 
-    if (needs_char_bootstrap or needs_gloss_bootstrap) and check_server_health(
-        project.config.llm.base_url
-    ):
+    if needs_char_bootstrap and check_server_health(project.config.llm.base_url):
         llm_client = LLMClient(project.config.llm)
-        if needs_char_bootstrap:
-            _LOG.info("Đang thực hiện LLM bootstrapping cho hồ sơ nhân vật...")
-            bootstrap_characters_with_llm(project, db, llm_client, max_chars=30)
-            db.set_meta("characters_bootstrapped", utc_timestamp())
-
-        if needs_gloss_bootstrap:
-            untranslated = [g for g in cur_glossary if not g.translation.strip()]
-            if untranslated:
-
-                def _freq(e: Any) -> int:
-                    m = re.search(r"(\d+)\s*lần", e.notes)
-                    return int(m.group(1)) if m else 1
-
-                untranslated.sort(key=_freq, reverse=True)
-                to_trans = untranslated[:150]
-                _LOG.info("Đang dịch tự động %d thuật ngữ phổ biến nhất...", len(to_trans))
-                enriched = translate_glossary_with_llm(
-                    to_trans, llm_client, examples=collect_term_examples(to_trans, db.all_units())
-                )
-                trans_map = {e.term: e for e in enriched if e.translation.strip()}
-                final_entries = [trans_map.get(e.term, e) for e in cur_glossary]
-                g_final = Glossary(final_entries)
-                g_final.save_file(glossary_file)
-                g_final.save_db(db)
-            db.set_meta("glossary_bootstrapped", utc_timestamp())
+        _LOG.info("Đang thực hiện LLM bootstrapping cho hồ sơ nhân vật...")
+        bootstrap_characters_with_llm(project, db, llm_client, max_chars=30)
+        db.set_meta("characters_bootstrapped", utc_timestamp())
 
     # Judge relationships and Vietnamese address forms from real exchanges (resumable, cheap:
     # one LLM call per few pairs). Skipped when bootstrapping is disabled or already done.
@@ -395,7 +341,7 @@ def run_unattended_pipeline(
                 )
                 return 0
 
-        # Bootstrap characters, scenes, and glossary idempotently
+        # Bootstrap characters and scenes idempotently
         bootstrap_if_needed(project, db, bootstrap=bootstrap)
 
         # Auto-sanitize database
@@ -697,12 +643,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--bootstrap",
         action="store_true",
-        help="Bắt buộc LLM bootstrapping lại cho hồ sơ nhân vật và thuật ngữ trước khi dịch",
+        help="Bắt buộc LLM bootstrapping lại cho hồ sơ nhân vật trước khi dịch",
     )
     parser.add_argument(
         "--no-bootstrap",
         action="store_true",
-        help="Bỏ qua bước LLM bootstrapping cho nhân vật và glossary",
+        help="Bỏ qua bước LLM bootstrapping cho nhân vật",
     )
     parser.add_argument(
         "--no-guard",

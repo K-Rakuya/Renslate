@@ -11,7 +11,6 @@ from renslate.core.config import Config, LLMConfig
 from renslate.core.db import Database
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     SceneMacroContext,
     SceneSummary,
     Status,
@@ -257,18 +256,15 @@ class TestContextIntegration:
     """Tests for ContextBundle and ContextBuilder scene macro integration."""
 
     def test_context_bundle_initialization_and_immutability(self) -> None:
-        gl = [GlossaryEntry(term="mana", translation="năng lượng")]
         chars = {"hero": CharacterProfile(tag="hero", display_name="Hero")}
         macro = SceneMacroContext(scene_id="s1", label="chap1", location="Forest")
         lb = [LookbackItem(speaker="hero", source="Hold on", target="Chờ đã")]
 
         bundle = ContextBundle(
-            glossary_matches=gl,
             characters=chars,
             scene_macro=macro,
             lookback=lb,
         )
-        assert isinstance(bundle.glossary_matches, tuple)
         assert isinstance(bundle.lookback, tuple)
         assert bundle.scene_macro == macro
         assert bundle.characters == chars
@@ -300,12 +296,10 @@ class TestContextIntegration:
         units = [Unit("d:1", UnitKind.DIALOGUE, 1, "I see light.", Status.PENDING, speaker="hero")]
         macro = SceneMacroContext(scene_id="s_dungeon", label="scene_dawn", location="Đồng cỏ")
         bundle = ContextBundle(
-            glossary_matches=[GlossaryEntry(term="light", translation="ánh sáng")],
             scene_macro=macro,
         )
 
         prompt = cb.build_user_prompt(units, bundle=bundle)
-        assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY):" not in prompt
         assert "BỐI CẢNH PHÂN CẢNH & TÓM TẮT CẢNH HIỆN TẠI (SCENE MACRO CONTEXT):" in prompt
         assert "- Phân cảnh (Scene Label): scene_dawn" in prompt
 

@@ -19,8 +19,6 @@ import pytest
 
 import renslate.core.db as root_db
 import renslate.core.db.schema as db_schema
-import renslate.engine.glossary as engine_glossary
-import renslate.glossary as root_glossary
 import renslate.ui.wizard as root_wizard
 from renslate.core.config import AppConfig, LLMConfig
 from renslate.core.db import Database
@@ -193,7 +191,7 @@ class TestMilestone3GlossaryDecommissioning:
             assert len(data[expected_key]) > 0
 
     def test_glossary_source_files_do_not_contain_embedded_wordlists(self) -> None:
-        """Neither engine/glossary.py nor root glossary.py embed 400+ LOC static wordlists."""
+        """Neither engine/glossary.py nor root glossary.py exist in src/."""
         engine_file = (
             Path(__file__).resolve().parent.parent
             / "src"
@@ -201,10 +199,7 @@ class TestMilestone3GlossaryDecommissioning:
             / "engine"
             / "glossary.py"
         )
-        content = engine_file.read_text(encoding="utf-8")
-        assert "_ENGLISH_STOP_WORDS = {" not in content
-        assert "_ENGLISH_PRONOUNS = {" not in content
-        assert "_load_stopwords_asset()" in content
+        assert not engine_file.exists()
 
         shim_file = (
             Path(__file__).resolve().parent.parent
@@ -212,40 +207,32 @@ class TestMilestone3GlossaryDecommissioning:
             / "renslate"
             / "glossary.py"
         )
-        assert len(shim_file.read_text(encoding="utf-8").splitlines()) < 40
+        assert not shim_file.exists()
 
     def test_glossary_shim_re_exports_callable_interfaces(self) -> None:
-        """Root glossary.py re-exports expected public functions and classes."""
-        for name in (
-            "Glossary",
-            "clean_glossary",
-            "is_valid_glossary_term",
-            "mine_glossary_candidates",
-            "translate_glossary_with_llm",
-        ):
-            assert hasattr(root_glossary, name)
-            assert getattr(root_glossary, name) is getattr(engine_glossary, name)
+        """Root renslate.glossary cannot be imported."""
+        with pytest.raises(ModuleNotFoundError):
+            import renslate.glossary  # noqa: F401
 
     def test_adversarial_glossary_shim_preserves_all_metadata(self) -> None:
-        """Adversarial check: root_glossary must expose __all__ restricting exported symbols."""
-        assert hasattr(root_glossary, "__all__")
-        assert "__all__" in dir(root_glossary)
+        """Adversarial check: engine.glossary cannot be imported."""
+        with pytest.raises(ModuleNotFoundError):
+            import renslate.engine.glossary  # noqa: F401
 
     def test_term_validation_with_loaded_stopwords(self) -> None:
-        """is_valid_glossary_term correctly rejects grammar noise and accepts valid terms."""
-        # Stop words
-        assert not engine_glossary.is_valid_glossary_term("about")
-        assert not engine_glossary.is_valid_glossary_term("the")
-        # Pronouns
-        assert not engine_glossary.is_valid_glossary_term("herself")
-        # Multi-word all stop words
-        assert not engine_glossary.is_valid_glossary_term("it was that")
-        # Phrase starting with contraction
-        assert not engine_glossary.is_valid_glossary_term("don't think")
-        # Genuine proper names/terms
-        assert engine_glossary.is_valid_glossary_term("Grand Duke")
-        assert engine_glossary.is_valid_glossary_term("Holy Grail")
-        assert engine_glossary.is_valid_glossary_term("Excalibur")
+        """Verify stopwords asset correctly classifies grammar words."""
+        asset_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "renslate"
+            / "data"
+            / "dictionaries"
+            / "english_stopwords.json"
+        )
+        data = json.loads(asset_path.read_text(encoding="utf-8"))
+        stop_set = set(data["stop_words"])
+        assert "about" in stop_set
+        assert "the" in stop_set
 
     def test_adversarial_pyproject_package_data_includes_dictionaries(self) -> None:
         """Adversarial check: pyproject.toml must declare dictionaries in package-data."""
@@ -313,7 +300,6 @@ class TestMilestone3DatabaseModularizationAndV5Schema:
             "QAAuditRepository",
             "TMRepository",
             "BatchRepository",
-            "GlossaryRepository",
         ):
             assert hasattr(root_db, sym)
 
@@ -347,9 +333,9 @@ class TestMilestone3DatabaseModularizationAndV5Schema:
         conn.commit()
         conn.close()
 
-        # Run migrations to v5 via Database.open
+        # Run migrations to latest via Database.open
         db = Database.open(db_file)
-        assert db.schema_version == 5
+        assert db.schema_version >= 6
 
         # Verify .v4.bak was created
         bak_file = Path(f"{db_file}.v4.bak")

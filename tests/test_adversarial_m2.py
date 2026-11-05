@@ -258,7 +258,7 @@ def test_adversarial_infer_persona_fallback_boundary_matrix() -> None:
 
     # Meta tag overrides in current implementation:
     for meta_tag in ("mc", "player", "hero", "protagonist"):
-        p = infer_persona_fallback(meta_tag, [], _make_sty(excl=2.0))
+        p = infer_persona_fallback(meta_tag, [], _make_sty(excl=2.0), is_protagonist=True)
         assert p["archetype"] == "protagonist"
 
     for meta_tag in ("narrator", "narration", "none"):

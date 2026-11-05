@@ -652,10 +652,10 @@ class TestTier5SQLiteDatabaseAndMigrationV5:
     """Stress tests for SQLite migrations, v5 normalized scenes, audit log, and WAL concurrency."""
 
     def test_fresh_database_creation_and_pragmas(self, tmp_path: Path) -> None:
-        """Fresh database must execute migrations v1-v5 and enforce SQLite pragmas."""
+        """Fresh database must execute migrations v1-v6 and enforce SQLite pragmas."""
         db_file = tmp_path / "fresh.db"
         with Database.open(db_file, create=True) as db:
-            assert db.schema_version == 5
+            assert db.schema_version >= 6
 
             cur = db.execute("PRAGMA foreign_keys").fetchone()
             assert cur[0] == 1
@@ -676,10 +676,10 @@ class TestTier5SQLiteDatabaseAndMigrationV5:
         assert get_schema_version(conn) == 4
         conn.close()
 
-        # Migrate to v5
+        # Migrate to v6
         conn_v5 = create_connection(db_file)
         run_migrations(conn_v5, db_path=db_file)
-        assert get_schema_version(conn_v5) == 5
+        assert get_schema_version(conn_v5) >= 6
         conn_v5.close()
 
         # Verify .db.v4.bak file existence and non-zero size

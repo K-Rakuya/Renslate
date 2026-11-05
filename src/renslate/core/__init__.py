@@ -34,7 +34,6 @@ from renslate.core.models import (
     ApplyTarget,
     BatchLog,
     CharacterProfile,
-    GlossaryEntry,
     Origin,
     QAIssue,
     RelationshipEdge,
@@ -64,7 +63,6 @@ __all__ = [
     "ConfigError",
     # Database
     "Database",
-    "GlossaryEntry",
     "LLMConfig",
     "LLMError",
     "MarkupError",

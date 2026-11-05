@@ -306,7 +306,6 @@ def test_batch_dialogue_units_strictly_ordered_by_seq() -> None:
 
 def test_prompt_system_and_user_completely_free_of_glossary() -> None:
     """Verify that glossary mechanism and prompt text are completely eliminated."""
-    from renslate.core.models import GlossaryEntry
     from renslate.engine.context import DEFAULT_SYSTEM_PROMPT, QUOTED_RULES
 
     # Invariant: system prompt rules must not contain any glossary rule
@@ -314,19 +313,14 @@ def test_prompt_system_and_user_completely_free_of_glossary() -> None:
     assert "THUẬT NGỮ" not in QUOTED_RULES
     assert "GLOSSARY" not in DEFAULT_SYSTEM_PROMPT
 
-    # Invariant: user prompt must not render glossary sections even if glossary entries are provided
+    # Invariant: user prompt must not render glossary sections
     cfg = Config()
     cb = ContextBuilder(cfg)
     u1 = _u(1, "Welcome to the Grand Sect, elder.", "ren")
-    glossary = [
-        GlossaryEntry("Grand Sect", "Đại Tông Môn"),
-        GlossaryEntry("elder", "trưởng lão", kind="candidate"),
-    ]
 
-    prompt = cb.build_user_prompt([u1], glossary_matches=glossary)
+    prompt = cb.build_user_prompt([u1])
     assert "GLOSSARY" not in prompt
     assert "THUẬT NGỮ BẮT BUỘC" not in prompt
     assert "DANH TỪ RIÊNG & THUẬT NGỮ CẦN ĐỒNG NHẤT" not in prompt
-    assert "Đại Tông Môn" not in prompt
 
 

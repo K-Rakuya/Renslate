@@ -1,4 +1,4 @@
-"""Orchestration pipeline for character discovery, scene segmentation, and glossary mining."""
+"""Orchestration pipeline for character discovery and scene segmentation."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from renslate.core.db import (
 )
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     RelationshipEdge,
     RelationshipKind,
     SceneMacroContext,
@@ -29,8 +28,10 @@ from renslate.core.models import (
     UnitKind,
 )
 from renslate.core.project import Project
+from renslate.engine.analyze.distill import run_pass2_distillation
 from renslate.engine.analyze.persona import (
     bootstrap_characters_with_llm,
+    find_protagonist_tag,
     infer_character_gender_nlp,
     infer_character_role_nlp,
     infer_persona_fallback,
@@ -40,20 +41,12 @@ from renslate.engine.analyze.persona import (
     resolve_pronoun_pair_from_relationship,
 )
 from renslate.engine.analyze.stylometrics import extract_stylometrics
+from renslate.engine.analyze.topology import build_topology_analysis
 from renslate.engine.analyze.tropes import (
     NON_INTERACTION_TAGS,
-    PROTAGONIST_TAGS,
 )
 from renslate.engine.context import infer_scene_cues
 from renslate.engine.context.resolver import invert_reciprocal_pronoun_rule
-from renslate.engine.glossary import (
-    Glossary,
-    _make_plural_aliases,
-    clean_glossary,
-    collect_term_examples,
-    mine_glossary_candidates,
-    translate_glossary_with_llm,
-)
 from renslate.engine.graph import RelationshipGraph
 
 _LOG = logging.getLogger("renslate.analyze.pipeline")
@@ -91,12 +84,7 @@ def extract_character_definitions(project_dir: Path) -> dict[str, str]:
                     name = tag.capitalize()
                 elif raw_name.endswith("_name"):
                     base = raw_name[:-5].strip()
-                    if base.lower() in PROTAGONIST_TAGS or tag.lower() in PROTAGONIST_TAGS:
-                        name = "Protagonist"
-                    else:
-                        name = base.capitalize()
-                elif tag.lower() in PROTAGONIST_TAGS:
-                    name = "Protagonist"
+                    name = base.capitalize() if base else raw_name
                 else:
                     name = raw_name
                 characters[tag] = re.sub(r"\b([A-Za-z])\s+([a-z]{2,})\b", r"\1\2", name).strip()
@@ -222,12 +210,11 @@ def run_analysis(
     project: Project,
     db: Database,
     *,
-    mine_glossary: bool = True,
     enrich_llm: bool = False,
     llm: Any = None,
 ) -> dict[str, int]:
-    """Run full analysis pipeline: discover characters, segment scenes, and glossary."""
-    stats = {"characters": 0, "scenes": 0, "glossary_candidates": 0, "glossary_translated": 0}
+    """Run full analysis pipeline: discover characters and segment scenes."""
+    stats = {"characters": 0, "scenes": 0}
 
     defined_chars = extract_character_definitions(project.root)
     existing_chars = db.get_characters()
@@ -264,6 +251,14 @@ def run_analysis(
         with contextlib.suppress(Exception):
             file_chars = load_characters_from_json(chars_file)
 
+    candidate_profiles: dict[str, CharacterProfile] = dict(existing_chars)
+    for t, d_name in defined_chars.items():
+        if t not in candidate_profiles:
+            candidate_profiles[t] = CharacterProfile(tag=t, display_name=d_name)
+
+    topology = build_topology_analysis(project)
+    protagonist_tag = topology.protagonist_tag or find_protagonist_tag(candidate_profiles, all_units)
+
     with db.transaction():
         temp_chars: dict[str, dict[str, Any]] = {}
         for tag in sorted(all_tags):
@@ -278,9 +273,12 @@ def run_analysis(
             if not gender or gender == "unknown":
                 gender = infer_character_gender_nlp(display_name, sources)
 
+            is_proto = bool(protagonist_tag and tag.lower() == protagonist_tag.lower())
             role = (fc.role if fc and fc.role else "") or (ec.role if ec and ec.role else "")
             if not role:
-                role = infer_character_role_nlp(tag, speaker_counts[tag], total_units_count)
+                role = infer_character_role_nlp(
+                    tag, speaker_counts[tag], total_units_count, is_protagonist=is_proto
+                )
 
             speech_style = (fc.speech_style if fc else "") or (ec.speech_style if ec else "")
             pronoun_map = (
@@ -291,7 +289,13 @@ def run_analysis(
             speaker_lines = dialogue_by_speaker.get(tag, [])
             sty = extract_stylometrics(speaker_lines)
             fb = infer_persona_fallback(
-                tag, speaker_lines, sty, role=role, gender=gender, display_name=display_name
+                tag,
+                speaker_lines,
+                sty,
+                role=role,
+                gender=gender,
+                display_name=display_name,
+                is_protagonist=is_proto,
             )
 
             archetype = (
@@ -333,13 +337,12 @@ def run_analysis(
                 "sample_dialogue": sample_dialogue,
             }
 
-        has_explicit_mc = any(t.lower() in PROTAGONIST_TAGS for t in temp_chars)
         for tag, tc in temp_chars.items():
             pronoun_map = dict(tc["pronoun_map"])
-            if has_explicit_mc:
-                is_mc = tag.lower() in PROTAGONIST_TAGS
-            else:
-                is_mc = tc["role"] == "Nhân vật chính (Protagonist)"
+            is_mc = bool(protagonist_tag and tag.lower() == protagonist_tag.lower()) or (
+                "protagonist" in tc["role"].lower()
+                or ("nhân vật chính" in tc["role"].lower() and "tuyến" not in tc["role"].lower())
+            )
 
             if is_non_human_or_meta(tag, tc["display_name"]):
                 profile = CharacterProfile(
@@ -377,10 +380,14 @@ def run_analysis(
                     pronoun_map[partner_tag] = "mọi người - bạn"
                     continue
 
-                partner_is_mc = (
-                    partner_tag.lower() in PROTAGONIST_TAGS
-                    if has_explicit_mc
-                    else partner_info.get("role") == "Nhân vật chính (Protagonist)"
+                partner_is_mc = bool(
+                    protagonist_tag and partner_tag.lower() == protagonist_tag.lower()
+                ) or (
+                    "protagonist" in partner_info.get("role", "").lower()
+                    or (
+                        "nhân vật chính" in partner_info.get("role", "").lower()
+                        and "tuyến" not in partner_info.get("role", "").lower()
+                    )
                 )
 
                 edge_out, edge_in = rel_graph.get_bilateral(tag, partner_tag)
@@ -525,87 +532,17 @@ def run_analysis(
             db.save_scene(sc)
             stats["scenes"] += 1
 
-    glossary_file = project.work_dir / "glossary.json"
-    exclude_character_names = {
-        p.display_name.lower() for p in all_profiles.values() if p.display_name
-    } | {tag.lower() for tag in all_tags}
-
-    if mine_glossary:
-        extra_terms: list[str] = []
-        game_dir = project.root / "game"
-        if game_dir.is_dir():
-            for f in sorted(game_dir.iterdir()):
-                if f.suffix in (".rpy", ".rpyc") and not f.name.startswith(
-                    ("00", "gui", "options", "screens", "updater")
-                ):
-                    clean_stem = (
-                        f.stem.replace("_events", "")
-                        .replace("_event", "")
-                        .replace("_store", " Store")
-                        .replace("_clan", " Clan")
-                        .replace("_world", " World")
-                    )
-                    words = clean_stem.replace("_", " ").title().split()
-                    c_cand = " ".join(words)
-                    if len(c_cand) >= 3 and not c_cand.isdigit():
-                        extra_terms.append(c_cand)
-
-        candidates = mine_glossary_candidates(
-            sources,
-            min_count=2,
-            exclude_terms=exclude_character_names,
-            extra_terms=extra_terms,
-        )
-        existing_glossary = Glossary.load_file(glossary_file)
-        known_terms = {e.term.lower() for e in existing_glossary.entries}
-
-        new_entries: list[GlossaryEntry] = list(existing_glossary.entries)
-        for term, _count in candidates:
-            if term.lower() not in known_terms:
-                entry = GlossaryEntry(
-                    term=term,
-                    translation="",
-                    kind="candidate",
-                    case_sensitive=False,
-                    aliases=tuple(_make_plural_aliases(term)),
-                    notes=f"Khai thác tự động (xuất hiện {_count} lần)",
-                )
-                new_entries.append(entry)
-                known_terms.add(term.lower())
-                stats["glossary_candidates"] += 1
-
-        cleaned_entries = clean_glossary(new_entries, exclude_terms=exclude_character_names)
-        updated_glossary = Glossary(cleaned_entries)
-        updated_glossary.save_file(glossary_file)
-        updated_glossary.save_db(db)
-
     if enrich_llm and llm is not None:
-        _LOG.info("Bắt đầu LLM bootstrapping cho hồ sơ nhân vật và thuật ngữ...")
+        _LOG.info("Bắt đầu Pass 2 Structured LLM Distillation...")
+        run_pass2_distillation(
+            project,
+            db,
+            llm,
+            topology.dyad_salience_windows,
+            protagonist_tag=protagonist_tag,
+        )
         bootstrap_characters_with_llm(project, db, llm, max_chars=15)
         db.set_meta("characters_bootstrapped", utc_timestamp())
-        if mine_glossary:
-            cur_glossary = Glossary.load_db(db)
-            cleaned = clean_glossary(cur_glossary.entries, exclude_terms=exclude_character_names)
-            untranslated = [e for e in cleaned if not e.translation.strip()]
-            if untranslated:
-
-                def _freq(e: GlossaryEntry) -> int:
-                    m = re.search(r"(\d+)\s*lần", e.notes)
-                    return int(m.group(1)) if m else 1
-
-                untranslated.sort(key=_freq, reverse=True)
-                to_trans = untranslated[:150]
-                enriched = translate_glossary_with_llm(
-                    to_trans, llm, examples=collect_term_examples(to_trans, db.all_units())
-                )
-                trans_map = {e.term: e for e in enriched if e.translation.strip()}
-                final_entries = [trans_map.get(e.term, e) for e in cleaned]
-                Glossary(final_entries).save_file(glossary_file)
-                Glossary(final_entries).save_db(db)
-                stats["glossary_translated"] = sum(
-                    1 for e in final_entries if e.translation.strip()
-                )
-            db.set_meta("glossary_bootstrapped", utc_timestamp())
 
     db.set_meta("analysis_completed", utc_timestamp())
     return stats

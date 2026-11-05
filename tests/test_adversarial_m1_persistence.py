@@ -173,17 +173,12 @@ class TestMigration3Stress:
                 ),
             )
 
-        # Insert TM entries, glossary entries, scenes, batches
+        # Insert TM entries, scenes, batches
         for i in range(30):
             conn.execute(
                 "INSERT INTO tm (src_norm, target, uses, origin, updated_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (f"norm_{i}", f"dịch_{i}", i + 1, "manual", "2026-10-25T10:00:00Z"),
-            )
-            conn.execute(
-                "INSERT INTO glossary (term, translation, kind, case_sensitive, aliases, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (f"term_{i}", f"thuật ngữ {i}", "general", 0, "[]", f"note {i}"),
             )
 
         conn.commit()

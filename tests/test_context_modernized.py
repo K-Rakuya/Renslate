@@ -330,3 +330,51 @@ class TestContextBuilderAndKnapsackBudget:
         # Both Hero and Princess profiles must remain in prompt despite tight budget
         assert "Hero" in prompt
         assert "Princess" in prompt
+
+    def test_relational_vector_algebraic_projection_resolution(self) -> None:
+        """Verify resolve_pronouns dynamically projects 4D RelationalVector Pi(R)."""
+        from renslate.core.models import KinshipKind, RelationalVector
+
+        resolver = InterlocutorResolver()
+        graph = RelationshipGraph()
+        vec = RelationalVector(
+            kinship=KinshipKind.ROMANTIC_COUPLE,
+            delta_hierarchy=0.2,
+            affinity=0.8,
+            register=0.4,
+        )
+        edge = RelationshipEdge(
+            source_tag="arthur",
+            target_tag="gwen",
+            kind=RelationshipKind.ROMANCE,
+            speaker_pronoun="",
+            listener_pronoun="",
+            vector=vec,
+        )
+        graph.add_edge(edge)
+        chars = {
+            "arthur": CharacterProfile("arthur", "Arthur", gender="male"),
+            "gwen": CharacterProfile("gwen", "Gwen", gender="female"),
+        }
+        # Direct projection via Pi(R)
+        direct = resolver.resolve_pronouns("arthur", "gwen", graph=graph, char_map=chars)
+        assert direct == ("anh", "em")
+        # Reciprocal projection via Pi(R.inverted())
+        recip = resolver.resolve_pronouns("gwen", "arthur", graph=graph, char_map=chars)
+        assert recip == ("em", "anh")
+
+    def test_translation_pipeline_defaults_to_transgraph_micro_framing(self, tmp_path) -> None:
+        """Verify production TranslationPipeline defaults to 2026 TransGraph micro-framing."""
+        from renslate.core.db import Database
+        from renslate.core.project import Project
+        from renslate.engine.translate import TranslationPipeline
+
+        root = tmp_path / "test_proj"
+        (root / "game").mkdir(parents=True)
+        proj = Project.create(root)
+        db = Database.open(tmp_path / "test.db", create=True)
+        cfg = Config()
+        pipeline = TranslationPipeline(proj, db, cfg)
+        assert pipeline.use_transgraph is True
+        assert pipeline.context.use_transgraph is True
+

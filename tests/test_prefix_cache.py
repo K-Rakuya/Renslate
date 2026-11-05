@@ -5,7 +5,6 @@ from __future__ import annotations
 from renslate.core.config import Config
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     RelationshipEdge,
     RelationshipKind,
     SceneMacroContext,
@@ -25,7 +24,6 @@ def test_stable_prefix_ordering_and_layer_hierarchy() -> None:
         "ren": CharacterProfile("ren", "Ren", gender="male", role="Hero"),
         "liana": CharacterProfile("liana", "Liana", gender="female", role="Priestess"),
     }
-    glossary = [GlossaryEntry("Sect", "Tông môn")]
     macro = SceneMacroContext(scene_id="s1", label="forest_night", summary="Night in the forest.")
     graph = RelationshipGraph()
     graph.add_edge(RelationshipEdge("ren", "liana", RelationshipKind.ROMANCE, "anh", "em"))
@@ -38,7 +36,6 @@ def test_stable_prefix_ordering_and_layer_hierarchy() -> None:
     sys_prompt = builder.build_system_prompt()
     user_prompt = builder.build_user_prompt(
         units,
-        glossary_matches=glossary,
         characters=chars,
         scene_macro=macro,
         graph=graph,
@@ -60,9 +57,8 @@ def test_stable_prefix_ordering_and_layer_hierarchy() -> None:
     # Layer 3.6: Dialogue Units
     idx_dialogue = user_prompt.index("CÁC DÒNG CẦN DỊCH")
 
-    # Verify strict hierarchy: Layer 2 < Layer 3.1 < Layer 3.2 < Layer 3.6 (Glossary removed)
+    # Verify strict hierarchy: Layer 2 < Layer 3.1 < Layer 3.2 < Layer 3.6
     assert idx_chars < idx_scene < idx_rel < idx_dialogue
-    assert "THUẬT NGỮ BẮT BUỘC (GLOSSARY):" not in user_prompt
 
 
 def test_prefix_cache_invariance_across_different_batches() -> None:
@@ -95,19 +91,17 @@ def test_prefix_cache_invariance_across_different_batches() -> None:
         ),
     }
 
-    # Batch 1: Ren and Liana talking, with Sect glossary
+    # Batch 1: Ren and Liana talking
     batch1_units = [
         Unit("d:1", UnitKind.DIALOGUE, 1, "Hello Liana", Status.PENDING, speaker="ren"),
         Unit("d:2", UnitKind.DIALOGUE, 2, "Hello Ren", Status.PENDING, speaker="liana"),
     ]
-    batch1_glossary = [GlossaryEntry("Sect", "Tông môn")]
     prompt1 = builder.build_user_prompt(
         batch1_units,
         characters=chars,
-        glossary_matches=batch1_glossary,
     )
 
-    # Batch 2: Ren and Elder talking, with Sword glossary
+    # Batch 2: Ren and Elder talking
     batch2_units = [
         Unit(
             "d:3",
@@ -119,11 +113,9 @@ def test_prefix_cache_invariance_across_different_batches() -> None:
         ),
         Unit("d:4", UnitKind.DIALOGUE, 4, "Listen carefully", Status.PENDING, speaker="elder"),
     ]
-    batch2_glossary = [GlossaryEntry("Sword", "Kiếm pháp")]
     prompt2 = builder.build_user_prompt(
         batch2_units,
         characters=chars,
-        glossary_matches=batch2_glossary,
     )
 
     # Both batches must have Layer 2 at token 0 of user prompt

@@ -22,7 +22,6 @@ from renslate.core.db.connection import (
 from renslate.core.db.repositories import (
     BatchRepository,
     CharacterRepository,
-    GlossaryRepository,
     QAAuditRepository,
     RelationshipRepository,
     SceneRepository,
@@ -40,8 +39,9 @@ from renslate.core.models import (
     ApplyTarget,
     BatchLog,
     CharacterProfile,
-    GlossaryEntry,
+    KinshipKind,
     Origin,
+    RelationalVector,
     RelationshipEdge,
     SceneMacroContext,
     SceneSummary,
@@ -58,6 +58,8 @@ _LOG = logging.getLogger("renslate.core.db")
 __all__ = [
     "MIGRATIONS",
     "Database",
+    "KinshipKind",
+    "RelationalVector",
     "backup_before_migration",
     "configure_connection",
     "create_connection",
@@ -83,7 +85,6 @@ class Database:
         self._scenes_repo = SceneRepository(self._connection)
         self._tm_repo = TMRepository(self._connection)
         self._batch_repo = BatchRepository(self._connection)
-        self._glossary_repo = GlossaryRepository(self._connection)
         self._audit_repo = QAAuditRepository(self._connection)
 
     @classmethod
@@ -267,24 +268,13 @@ class Database:
         scored.sort(key=lambda x: (x[1], x[0].uses), reverse=True)
         return scored[:limit]
 
-    # ── Glossary (Legacy Compatibility) ─────────────────────────────
-
-    def get_glossary(self) -> list[GlossaryEntry]:
-        return self._glossary_repo.get_all()
-
-    def save_glossary(self, entry: GlossaryEntry) -> None:
-        self._glossary_repo.save(entry)
-
-    def save_glossary_entry(self, entry: GlossaryEntry) -> None:
-        self.save_glossary(entry)
-
-    def save_glossary_bulk(self, entries: Sequence[GlossaryEntry]) -> None:
-        self._glossary_repo.save_bulk(entries)
-
     # ── Characters ──────────────────────────────────────────────────
 
     def get_characters(self) -> dict[str, CharacterProfile]:
         return self._chars_repo.get_characters()
+
+    def get_character(self, tag: str) -> CharacterProfile | None:
+        return self._chars_repo.get_character(tag)
 
     def save_character(self, profile: CharacterProfile) -> None:
         self._chars_repo.save_character(profile)
@@ -424,21 +414,17 @@ class Database:
             )
             qa_rows = qa_cur.fetchall()
             if qa_rows:
-                glossary_mod = importlib.import_module("renslate.engine.glossary")
-                Glossary = glossary_mod.Glossary
                 QAChecker = qa_mod.QAChecker
                 mask_mod = importlib.import_module("renslate.renpy.mask")
                 mask = mask_mod.mask
 
-                g_obj = Glossary(self.get_glossary())
                 qa_checker = QAChecker()
                 recheck_updates = []
                 for row in qa_rows:
                     uid, spk, src, tgt = row["uid"], row["speaker"], row["source"], row["target"]
                     masked = mask(src) if src else None
-                    unit_glossary = g_obj.match_text(src) if src else ()
                     new_issues = qa_checker.check_unit(
-                        uid, src, masked, tgt, glossary_matches=unit_glossary, speaker=spk
+                        uid, src, masked, tgt, speaker=spk
                     )
                     new_codes = tuple(sorted({i.code for i in new_issues}))
                     new_status = Status.QA_FLAGGED if new_issues else Status.TRANSLATED

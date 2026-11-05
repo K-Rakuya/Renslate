@@ -11,9 +11,10 @@ from renslate.core.models import (
     ApplyTarget,
     BatchLog,
     CharacterProfile,
-    GlossaryEntry,
+    KinshipKind,
     Origin,
     QAIssue,
+    RelationalVector,
     RelationshipEdge,
     RelationshipKind,
     SceneMacroContext,
@@ -24,15 +25,17 @@ from renslate.core.models import (
     Unit,
     UnitKind,
 )
+from renslate.domain.relational import project_relational_vector
 
 __all__ = [
     "LOCKED_ORIGINS",
     "ApplyTarget",
     "BatchLog",
     "CharacterProfile",
-    "GlossaryEntry",
+    "KinshipKind",
     "Origin",
     "QAIssue",
+    "RelationalVector",
     "RelationshipEdge",
     "RelationshipKind",
     "SceneMacroContext",
@@ -42,6 +45,7 @@ __all__ = [
     "TMEntry",
     "Unit",
     "UnitKind",
+    "project_relational_vector",
 ]
 
 sys.modules[__name__] = _target

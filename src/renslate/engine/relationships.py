@@ -26,12 +26,15 @@ from typing import Any
 from renslate.core.db import Database, save_characters_to_json
 from renslate.core.models import (
     CharacterProfile,
+    KinshipKind,
+    RelationalVector,
     RelationshipEdge,
     RelationshipKind,
     Unit,
     UnitKind,
 )
 from renslate.core.project import Project
+from renslate.domain.relational import project_relational_vector
 from renslate.engine.analyze import is_collective_entity, is_non_human_or_meta
 from renslate.engine.context import InterlocutorResolver
 from renslate.engine.graph import RelationshipGraph
@@ -64,7 +67,7 @@ RELATIONSHIP_SYSTEM_PROMPT = (
     "Nguyên tắc:\n"
     "- Dựa vào bằng chứng trong đoạn thoại: tuổi tác/vai vế, độ thân thiết, bối cảnh "
     "(hiện đại, giả tưởng, cổ trang), giọng điệu (kính cẩn, thân mật, thù địch).\n"
-    "- Cách xưng hô có thể BẤT ĐỐI XỨNG (ví dụ một bên gọi 'em', bên kia gọi 'cậu').\n"
+    "- Đảm bảo tính ĐỐI ỨNG ĐẠI SỐ (Reciprocal Invariant): Nếu A xưng 'anh' gọi 'em', B BẮT BUỘC xưng 'em' gọi 'anh'. Tuyệt đối không để xảy ra xưng hô bất đối xứng phi lý.\n"
     "- 'self' và 'other' phải là từ/cụm từ ngắn tiếng Việt, khác nhau, không phải tên riêng.\n"
     "- Không đủ bằng chứng về tình cảm thì KHÔNG đoán là ROMANCE; chọn kind trung tính "
     "(FORMAL_ACQUAINTANCE hoặc FRIENDSHIP_CASUAL) và cách xưng hô lịch sự.\n"
@@ -208,6 +211,7 @@ class _ParsedPair:
     b_to_a: tuple[str, str]
     confidence: float
     evidence: str
+    vector: RelationalVector | None = None
 
 
 def _clean_pronoun(value: Any) -> str:
@@ -250,12 +254,33 @@ def parse_pair_result(data: Any) -> _ParsedPair | None:
         confidence = 0.8
     confidence = min(0.9, max(0.3, confidence))
     evidence = _clean_line(str(data.get("evidence") or ""), limit=200)
+
+    # Parse 4D vector if available
+    vector = None
+    vec_raw = data.get("vector")
+    if isinstance(vec_raw, Mapping):
+        try:
+            vector = RelationalVector.from_dict(vec_raw)
+        except Exception:
+            vector = None
+    elif any(k in data for k in ("kinship", "delta_hierarchy", "affinity", "register")):
+        try:
+            vector = RelationalVector(
+                kinship=KinshipKind.from_str(str(data.get("kinship", "NONE"))),
+                delta_hierarchy=float(data.get("delta_hierarchy", 0.0)),
+                affinity=float(data.get("affinity", 0.0)),
+                register=float(data.get("register", 0.5)),
+            )
+        except Exception:
+            vector = None
+
     return _ParsedPair(
         kind=kind,
         a_to_b=a_to_b or ("", ""),
         b_to_a=b_to_a or ("", ""),
         confidence=confidence,
         evidence=evidence,
+        vector=vector,
     )
 
 
@@ -265,11 +290,44 @@ def _apply_pair(
     ev: PairEvidence,
     parsed: _ParsedPair,
 ) -> tuple[int, set[str]]:
-    """Write the directed edges; return (edges written, tags whose profile changed)."""
+    """Write directed edges with algebraic reciprocal closure; return (edges written, changed tags)."""
     written = 0
     changed: set[str] = set()
     note = f"LLM: {parsed.evidence}" if parsed.evidence else "LLM"
-    for src, tgt, forms in ((ev.a, ev.b, parsed.a_to_b), (ev.b, ev.a, parsed.b_to_a)):
+
+    prof_a = profiles.get(ev.a) or profiles.get(ev.a.lower())
+    prof_b = profiles.get(ev.b) or profiles.get(ev.b.lower())
+    ga = prof_a.gender if prof_a else "unknown"
+    gb = prof_b.gender if prof_b else "unknown"
+
+    vec_ab = parsed.vector
+    if vec_ab is None:
+        from renslate.core.models import _infer_vector_from_legacy_edge
+
+        spk_hint = parsed.a_to_b[0] or parsed.b_to_a[1]
+        lis_hint = parsed.a_to_b[1] or parsed.b_to_a[0]
+        vec_ab = _infer_vector_from_legacy_edge(parsed.kind, spk_hint, lis_hint)
+
+    vec_ba = vec_ab.inverted()
+
+    def _is_reciprocal(f_ab: tuple[str, str], f_ba: tuple[str, str]) -> bool:
+        if not f_ab[0] or not f_ab[1] or not f_ba[0] or not f_ba[1]:
+            return False
+        if f_ab[0].lower() == f_ba[1].lower() and f_ab[1].lower() == f_ba[0].lower():
+            return True
+        return bool(
+            f_ab[1].lower() == f_ba[1].lower()
+            and f_ab[1].lower() in ("cậu", "mày", "bạn", "ngươi", "huynh đệ")
+        )
+
+    if _is_reciprocal(parsed.a_to_b, parsed.b_to_a):
+        forms_ab = parsed.a_to_b
+        forms_ba = parsed.b_to_a
+    else:
+        forms_ab = project_relational_vector(vec_ab, ga, gb)
+        forms_ba = project_relational_vector(vec_ba, gb, ga)
+
+    for src, tgt, forms, vec in ((ev.a, ev.b, forms_ab, vec_ab), (ev.b, ev.a, forms_ba, vec_ba)):
         if not forms[0] or not forms[1]:
             continue
         existing = graph.get_edge(src, tgt)
@@ -284,13 +342,11 @@ def _apply_pair(
             confidence=parsed.confidence,
             source_type="llm",
             notes=note,
+            vector=vec,
         )
         if not graph.add_edge(edge):
             continue
         written += 1
-        # Keep the profile's pronoun_map consistent with the graph so the prompt never gives
-        # two different rules for one pair. Entries typed by a human (no edge behind them)
-        # are left alone.
         prof = profiles.get(src) or profiles.get(src.lower())
         if prof is not None:
             rule = f"{forms[0]} - {forms[1]}"

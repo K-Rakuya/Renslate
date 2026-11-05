@@ -155,6 +155,6 @@ def test_user_prompt_uses_rich_scene_macro() -> None:
         scene_id="s1", label="cafe", summary=GOOD["summary"], location="Quán cà phê"
     )
     prompt = ContextBuilder(Config()).build_user_prompt(
-        batch_units=units, glossary_matches=[], characters={}, scene_macro=macro
+        batch_units=units, characters={}, scene_macro=macro
     )
     assert GOOD["summary"] in prompt

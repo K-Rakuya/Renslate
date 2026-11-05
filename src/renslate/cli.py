@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
-import re
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -94,29 +93,18 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         stats = run_analysis(
             project,
             database,
-            mine_glossary=not args.no_glossary,
             enrich_llm=getattr(args, "bootstrap", False),
             llm=llm,
         )
     print(f"Đã phân tích dự án tại {project.root}:")
     print(f"  nhân vật phát hiện : {stats['characters']}")
     print(f"  phân đoạn cảnh     : {stats['scenes']}")
-    print(f"  ứng viên glossary  : {stats['glossary_candidates']}")
-    if stats.get("glossary_translated"):
-        print(f"  thuật ngữ đã dịch  : {stats['glossary_translated']}")
     return 0
 
 
 def _cmd_bootstrap(args: argparse.Namespace) -> int:
     project = Project.open(_root(args))
-    from renslate.core.models import GlossaryEntry
     from renslate.engine.analyze import bootstrap_characters_with_llm
-    from renslate.engine.glossary import (
-        Glossary,
-        clean_glossary,
-        collect_term_examples,
-        translate_glossary_with_llm,
-    )
     from renslate.engine.llm import LLMClient
     from renslate.engine.relationships import bootstrap_relationships_with_llm
     from renslate.engine.scenes import summarize_scenes_with_llm
@@ -152,42 +140,7 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             )
             print(f"  -> Đã tóm tắt {sc_stats['summarized']}/{sc_stats['scenes']} cảnh.")
 
-        # 2. Glossary
-        glossary_file = project.work_dir / "glossary.json"
-        glossary = Glossary.load_db(database)
-        if not glossary.entries and glossary_file.is_file():
-            glossary = Glossary.load_file(glossary_file)
-
-        char_names = {p.display_name.lower() for p in chars.values() if p.display_name} | set(
-            chars.keys()
-        )
-        cleaned_entries = clean_glossary(glossary.entries, exclude_terms=char_names)
-
-        untranslated = [e for e in cleaned_entries if not e.translation.strip()]
-        if untranslated:
-
-            def _freq(e: GlossaryEntry) -> int:
-                m = re.search(r"(\d+)\s*lần", e.notes)
-                return int(m.group(1)) if m else 1
-
-            untranslated.sort(key=_freq, reverse=True)
-            to_trans = untranslated[: args.top_terms]
-            total_untrans = len(untranslated)
-            print(f"  Đang dịch thuật ngữ bằng LLM ({len(to_trans)}/{total_untrans} ứng viên)...")
-            enriched = translate_glossary_with_llm(
-                to_trans, llm, examples=collect_term_examples(to_trans, database.all_units())
-            )
-            trans_map = {e.term: e for e in enriched if e.translation.strip()}
-            final_entries = [trans_map.get(e.term, e) for e in cleaned_entries]
-            g_final = Glossary(final_entries)
-            g_final.save_file(glossary_file)
-            g_final.save_db(database)
-            translated_count = sum(1 for e in final_entries if e.translation.strip())
-            print(f"  -> Đã dịch {translated_count}/{len(final_entries)} thuật ngữ.")
-        else:
-            print("  -> Bảng thuật ngữ đã có bản dịch đầy đủ hoặc chưa có ứng viên.")
-
-    print("Hoàn tất bootstrap! characters.json và glossary.json đã được cập nhật thành công.")
+    print("Hoàn tất bootstrap! characters.json đã được cập nhật thành công.")
     return 0
 
 
@@ -263,7 +216,6 @@ def _cmd_qa(args: argparse.Namespace) -> int:
                 u.source,
                 masked,
                 u.target,
-                glossary_matches=(),
                 speaker=u.speaker,
             )
             if issues:
@@ -686,24 +638,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--overwrite", action="store_true", help="ghi đè tệp .rpy nếu đã tồn tại"
     )
 
-    analyze = add("analyze", _cmd_analyze, "phân tích nhân vật, phân cảnh và thuật ngữ")
-    analyze.add_argument(
-        "--no-glossary", action="store_true", help="bỏ qua bước khai thác ứng viên thuật ngữ"
-    )
+    analyze = add("analyze", _cmd_analyze, "phân tích nhân vật và phân cảnh")
     analyze.add_argument(
         "--bootstrap",
         action="store_true",
-        help="tự động gọi LLM để phân tích nhân vật và dịch thuật ngữ",
+        help="tự động gọi LLM để phân tích nhân vật",
     )
 
     bootstrap = add(
-        "bootstrap", _cmd_bootstrap, "tự động làm giàu hồ sơ nhân vật và dịch thuật ngữ bằng LLM"
+        "bootstrap", _cmd_bootstrap, "tự động làm giàu hồ sơ nhân vật bằng LLM"
     )
     bootstrap.add_argument(
         "--top-chars", type=int, default=15, help="số nhân vật chính cần phân tích (mặc định: 15)"
-    )
-    bootstrap.add_argument(
-        "--top-terms", type=int, default=100, help="số thuật ngữ cần dịch bằng LLM (mặc định: 100)"
     )
     bootstrap.add_argument(
         "--top-pairs",
@@ -887,12 +833,12 @@ def _build_parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--bootstrap",
             action="store_true",
-            help="bắt buộc LLM bootstrapping lại cho hồ sơ nhân vật và thuật ngữ trước khi dịch",
+            help="bắt buộc LLM bootstrapping lại cho hồ sơ nhân vật trước khi dịch",
         )
         sub.add_argument(
             "--no-bootstrap",
             action="store_true",
-            help="bỏ qua bước LLM bootstrapping cho nhân vật và glossary",
+            help="bỏ qua bước LLM bootstrapping cho nhân vật",
         )
         sub.add_argument(
             "--no-guard",

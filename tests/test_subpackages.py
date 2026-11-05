@@ -28,7 +28,6 @@ import renslate.core.textio
 import renslate.engine
 import renslate.engine.analyze
 import renslate.engine.context
-import renslate.engine.glossary
 import renslate.engine.llm
 import renslate.engine.qa
 import renslate.engine.tm
@@ -84,7 +83,6 @@ def test_subpackage_engine_exports() -> None:
     assert hasattr(renslate.engine.llm, "LLMClient")
     assert hasattr(renslate.engine.context, "ContextBuilder")
     assert hasattr(renslate.engine.qa, "QAChecker")
-    assert hasattr(renslate.engine.glossary, "Glossary")
     assert hasattr(renslate.engine.tm, "TranslationMemory")
     assert hasattr(renslate.engine.analyze, "run_analysis")
     assert hasattr(renslate.engine.tsvio, "export_tsv")
@@ -131,7 +129,6 @@ def test_sys_modules_legacy_mapping() -> None:
         "renslate.llm",
         "renslate.context",
         "renslate.qa",
-        "renslate.glossary",
         "renslate.tm",
         "renslate.analyze",
         "renslate.tsvio",

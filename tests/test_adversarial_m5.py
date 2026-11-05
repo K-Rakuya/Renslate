@@ -22,7 +22,6 @@ from renslate.core.config import Config
 from renslate.core.db import Database
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     Origin,
     SceneSummary,
     Status,
@@ -282,7 +281,6 @@ def test_token_budgeting_massive_batches_and_narration() -> None:
         )
         for i in range(200)
     ]
-    glossary = [GlossaryEntry(term="magic", translation="phép thuật")]
     chars = {"eileen": CharacterProfile(tag="eileen", display_name="Eileen")}
     scene = SceneSummary(scene_id="s1", label="ch1", summary="Major dramatic scene climax")
     lookback = [LookbackItem(speaker="eileen", source="Past line", target="Dòng trước")]
@@ -290,7 +288,6 @@ def test_token_budgeting_massive_batches_and_narration() -> None:
     # Must not crash; optional sections must gracefully omit to prevent overflow
     prompt_massive = builder.build_user_prompt(
         massive_units,
-        glossary_matches=glossary,
         characters=chars,
         scene_summary=scene,
         lookback=lookback,

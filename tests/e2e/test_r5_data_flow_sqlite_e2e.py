@@ -98,13 +98,13 @@ class TestR5Tier1FeatureCoverage:
                 "units",
                 "slots",
                 "tm",
-                "glossary",
                 "characters",
                 "character_relationships",
                 "scenes",
                 "batches",
             }
             assert expected.issubset(table_names)
+            assert "glossary" not in table_names
 
     def test_transaction_rollback_on_exception(self, tmp_path: Path) -> None:
         """Verify unhandled exception inside transaction rolls back all pending inserts."""

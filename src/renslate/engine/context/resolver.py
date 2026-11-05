@@ -6,10 +6,11 @@ import re
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from renslate.core.models import CharacterProfile, Unit
 from renslate.domain.policies.attention import DiscourseAttentionPolicy
+from renslate.domain.relational import project_relational_vector
 
 if TYPE_CHECKING:
     from renslate.engine.graph import RelationshipGraph
@@ -30,6 +31,7 @@ __all__ = [
     "_strip_outer_quotes",
     "harmonize_reciprocal_rules",
     "invert_reciprocal_pronoun_rule",
+    "resolve_dyad",
 ]
 
 _NON_DIALOGUE_TAGS = frozenset(
@@ -203,6 +205,26 @@ def harmonize_reciprocal_rules(
 
     return rule_a_to_b, rule_b_to_a
 
+
+def resolve_dyad(
+    speaker: str,
+    conversational_speakers: frozenset[str] | set[str] | Sequence[str],
+) -> str | None:
+    """Deterministically resolve the listener in O(1) time if conversational speakers set is dyadic."""
+    spk_norm = speaker.strip().lower()
+    orig_map = {
+        s.strip().lower(): s.strip()
+        for s in conversational_speakers
+        if s and s.strip()
+    }
+    pool = set(orig_map.keys()) - _NON_DIALOGUE_TAGS
+    if len(pool) == 2 and spk_norm in pool:
+        rem_lower = pool - {spk_norm}
+        if rem_lower:
+            return orig_map[next(iter(rem_lower))]
+    return None
+
+
 _FEMALE_KINSHIP: frozenset[str] = frozenset(
     {"mother", "mom", "mama", "mẹ", "má", "sister", "chị", "em gái", "aunt", "cô", "dì", "bà", "con gái", "cháu gái"}
 )
@@ -304,23 +326,30 @@ class ResolvedInterlocutor:
     resolution_method: str = "default"
 
 
-def _extract_unit_file(unit: Unit | None) -> str | None:
-    """Safely extract filename from unit ref."""
-    if not unit or not unit.ref:
+def _extract_unit_file(unit: Any) -> str | None:
+    """Safely extract filename from unit ref or file."""
+    if not unit:
         return None
-    ref = unit.ref.strip()
+    raw_ref = getattr(unit, "ref", None) or getattr(unit, "file", None)
+    if not raw_ref:
+        return None
+    ref = str(raw_ref).strip()
     if ":" in ref:
         return ref.split(":", 1)[0]
     return ref
 
 
-def _is_scene_boundary(curr: Unit, prev: Unit | None) -> bool:
+def _is_scene_boundary(curr: Any, prev: Any | None) -> bool:
     """Detect whether sequence transition crossed a scene boundary."""
     if prev is None:
         return True
-    if abs(curr.seq - prev.seq) > 30:
+    curr_seq = getattr(curr, "seq", None)
+    prev_seq = getattr(prev, "seq", None)
+    if curr_seq is not None and prev_seq is not None and abs(curr_seq - prev_seq) > 30:
         return True
-    if curr.label and prev.label and curr.label != prev.label:
+    curr_label = getattr(curr, "label", None)
+    prev_label = getattr(prev, "label", None)
+    if curr_label and prev_label and curr_label != prev_label:
         return True
     curr_file = _extract_unit_file(curr)
     prev_file = _extract_unit_file(prev)
@@ -333,7 +362,7 @@ class InterlocutorResolver:
     def __init__(self, history_window: int = 12) -> None:
         self._aliases: dict[str, str] = {}
         self._speaker_aliases: dict[tuple[str, str], str] = {}
-        self._prev_unit: Unit | None = None
+        self._prev_unit: Any = None
         self._prev_speaker: str | None = None
         self._last_listener: str | None = None
         # Recent spoken turns (speaker, seq) of the current scene. Narration, thoughts and
@@ -358,7 +387,7 @@ class InterlocutorResolver:
         if spk:
             self._speaker_aliases[(spk.strip().lower(), cand_clean)] = target
 
-    def _remember_turn(self, speaker: str | None, unit: Unit) -> None:
+    def _remember_turn(self, speaker: str | None, unit: Any) -> None:
         if not speaker:
             return
         if self._recent_turns and self._recent_turns[-1][0] == speaker:
@@ -383,7 +412,7 @@ class InterlocutorResolver:
             prev_unit
             and prev_unit.speaker
             and prev_unit.speaker.lower() != spk_lower
-            and prev_unit.source.strip().endswith("?")
+            and (getattr(prev_unit, "source", None) or getattr(prev_unit, "text", "")).strip().endswith("?")
             and (not allowed_targets or prev_unit.speaker.lower() in allowed_targets)
             and 0 <= unit.seq - prev_unit.seq <= 4
         ):
@@ -674,11 +703,12 @@ class InterlocutorResolver:
 
     def resolve(
         self,
-        unit: Unit,
-        prev_unit: Unit | None = None,
+        unit: Any,
+        prev_unit: Any = None,
         active_speakers: set[str] | Sequence[str] | None = None,
         known_names: dict[str, str] | None = None,
         present_characters: set[str] | Sequence[str] | None = None,
+        conversational_speakers: set[str] | frozenset[str] | Sequence[str] | None = None,
     ) -> ResolvedInterlocutor:
         """Resolve speaker, listener, and monologue state in O(1) time."""
         effective_prev = prev_unit if prev_unit is not None else self._prev_unit
@@ -688,7 +718,7 @@ class InterlocutorResolver:
 
         spk = unit.speaker.strip() if unit.speaker else None
         spk_lower = spk.lower() if spk else ""
-        src = unit.source.strip()
+        src = (getattr(unit, "source", None) or getattr(unit, "text", "")).strip()
         emotion = self._detect_emotion(src)
 
         # 1. Monologue / Soliloquy classification
@@ -704,15 +734,60 @@ class InterlocutorResolver:
                 resolution_method="monologue",
             )
 
-        name_map = self._build_name_map(active_speakers, known_names)
+        # 1b. Deterministic O(1) Dyad Turn Resolution via conversational_speakers
+        if conversational_speakers is not None:
+            dyad_listener = resolve_dyad(spk, conversational_speakers)
+            if dyad_listener:
+                self._prev_unit = unit
+                self._prev_speaker = spk
+                self._last_listener = dyad_listener
+                self._remember_turn(spk, unit)
+                return ResolvedInterlocutor(
+                    speaker=spk,
+                    listener=dyad_listener,
+                    is_monologue=False,
+                    detected_emotion=emotion,
+                    resolution_method="dyad",
+                )
 
-        # Collect allowed active presence targets (if scene presence or stage is explicitly specified)
+        # 1c. Deterministic O(1) Dyad Turn Resolution via grounded unit active_presence
+        unit_presence = getattr(unit, "active_presence", None)
+        if unit_presence:
+            dyad_listener = resolve_dyad(spk, unit_presence)
+            if dyad_listener:
+                self._prev_unit = unit
+                self._prev_speaker = spk
+                self._last_listener = dyad_listener
+                self._remember_turn(spk, unit)
+                return ResolvedInterlocutor(
+                    speaker=spk,
+                    listener=dyad_listener,
+                    is_monologue=False,
+                    detected_emotion=emotion,
+                    resolution_method="dyad",
+                )
+
+        name_map = self._build_name_map(active_speakers, known_names)
+        if unit_presence:
+            for tag in unit_presence:
+                t = tag.strip().lower()
+                if t not in name_map:
+                    name_map[t] = tag
+
+        # Collect allowed active presence targets (if scene presence, stage, or active_presence is specified)
         allowed_targets: set[str] | None = None
         if present_characters:
             allowed_targets = {
                 p.strip().lower() for p in present_characters if p and p.strip()
             }
             allowed_targets.difference_update(_NON_DIALOGUE_TAGS)
+
+        if unit_presence:
+            pres_norm = {p.strip().lower() for p in unit_presence if p and p.strip()} - _NON_DIALOGUE_TAGS
+            if allowed_targets is not None:
+                allowed_targets = allowed_targets.intersection(pres_norm)
+            else:
+                allowed_targets = set(pres_norm)
 
         if hasattr(unit, "stage") and unit.stage is not None:
             stage_tags = getattr(unit.stage, "active_tags", None)
@@ -807,7 +882,7 @@ class InterlocutorResolver:
         # 4. Turn-Taking Adjacency
         if effective_prev and effective_prev.speaker:
             prev_spk = effective_prev.speaker.strip()
-            prev_src = effective_prev.source.strip()
+            prev_src = (getattr(effective_prev, "source", None) or getattr(effective_prev, "text", "")).strip()
             prev_is_mono, _ = _analyze_monologue_and_dialogue(prev_src)
             prev_is_non_dialogue = prev_spk.lower() in _NON_DIALOGUE_TAGS or prev_is_mono
             if (
@@ -868,8 +943,13 @@ class InterlocutorResolver:
             edge = graph.get_edge(spk_clean, lis_clean) or graph.get_edge(spk_lower, lis_lower)
             if edge is None and cp_spk and cp_lis:
                 edge = graph.get_edge(cp_spk.tag, cp_lis.tag)
-            if edge and edge.speaker_pronoun and edge.listener_pronoun:
-                return edge.speaker_pronoun, edge.listener_pronoun
+            if edge:
+                if edge.speaker_pronoun and edge.listener_pronoun:
+                    return edge.speaker_pronoun, edge.listener_pronoun
+                if hasattr(edge, "vector") and edge.vector is not None:
+                    ga = getattr(cp_spk, "gender", "unknown") if cp_spk else "unknown"
+                    gb = getattr(cp_lis, "gender", "unknown") if cp_lis else "unknown"
+                    return project_relational_vector(edge.vector, ga, gb)
 
             # 2. Reciprocal edge in RelationshipGraph: B -> A (Symmetric inversion)
             reciprocal = graph.get_edge(lis_clean, spk_clean) or graph.get_edge(
@@ -877,8 +957,14 @@ class InterlocutorResolver:
             )
             if reciprocal is None and cp_spk and cp_lis:
                 reciprocal = graph.get_edge(cp_lis.tag, cp_spk.tag)
-            if reciprocal and reciprocal.speaker_pronoun and reciprocal.listener_pronoun:
-                return reciprocal.listener_pronoun, reciprocal.speaker_pronoun
+            if reciprocal:
+                if reciprocal.speaker_pronoun and reciprocal.listener_pronoun:
+                    return reciprocal.listener_pronoun, reciprocal.speaker_pronoun
+                if hasattr(reciprocal, "vector") and reciprocal.vector is not None:
+                    ga = getattr(cp_spk, "gender", "unknown") if cp_spk else "unknown"
+                    gb = getattr(cp_lis, "gender", "unknown") if cp_lis else "unknown"
+                    p_lis, p_spk = project_relational_vector(reciprocal.vector, gb, ga)
+                    return p_spk, p_lis
 
         # 3. Direct pronoun map from CharacterProfile: cp_spk.pronoun_map
         if cp_spk and cp_spk.pronoun_map:

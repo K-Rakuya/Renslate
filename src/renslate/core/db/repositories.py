@@ -13,8 +13,9 @@ from renslate.core.models import (
     ApplyTarget,
     BatchLog,
     CharacterProfile,
-    GlossaryEntry,
+    KinshipKind,
     Origin,
+    RelationalVector,
     RelationshipEdge,
     RelationshipKind,
     SceneMacroContext,
@@ -31,7 +32,6 @@ _LOG = logging.getLogger("renslate.core.db.repositories")
 __all__ = [
     "BatchRepository",
     "CharacterRepository",
-    "GlossaryRepository",
     "QAAuditRepository",
     "RelationshipRepository",
     "SceneRepository",
@@ -130,20 +130,6 @@ ON CONFLICT (src_norm) DO UPDATE SET
     origin = excluded.origin,
     updated_at = excluded.updated_at
 """
-_SQL_UPSERT_GLOSSARY = """
-INSERT INTO glossary (term, translation, kind, case_sensitive, aliases, notes)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (term) DO UPDATE SET
-    translation = excluded.translation,
-    kind = excluded.kind,
-    case_sensitive = excluded.case_sensitive,
-    aliases = excluded.aliases,
-    notes = excluded.notes
-"""
-_SQL_SELECT_GLOSSARY = (
-    "SELECT term, translation, kind, case_sensitive, aliases, notes FROM glossary "
-    "ORDER BY length(term) DESC"
-)
 _SQL_UPSERT_CHARACTER = """
 INSERT INTO characters (
     tag, display_name, gender, role, speech_style, pronoun_map,
@@ -170,18 +156,22 @@ _SQL_SELECT_CHARACTERS = (
 
 _RELATIONSHIP_COLUMNS = (
     "source_tag, target_tag, kind, speaker_pronoun, listener_pronoun, "
-    "confidence, source_type, notes"
+    "confidence, source_type, notes, kinship, delta_hierarchy, affinity, register"
 )
 _SQL_UPSERT_RELATIONSHIP = f"""
 INSERT INTO character_relationships ({_RELATIONSHIP_COLUMNS})
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (source_tag, target_tag) DO UPDATE SET
     kind = excluded.kind,
     speaker_pronoun = excluded.speaker_pronoun,
     listener_pronoun = excluded.listener_pronoun,
     confidence = excluded.confidence,
     source_type = excluded.source_type,
-    notes = excluded.notes
+    notes = excluded.notes,
+    kinship = excluded.kinship,
+    delta_hierarchy = excluded.delta_hierarchy,
+    affinity = excluded.affinity,
+    register = excluded.register
 """
 _SQL_SELECT_ALL_RELATIONSHIPS = (
     f"SELECT {_RELATIONSHIP_COLUMNS} FROM character_relationships "
@@ -281,9 +271,21 @@ def _relationship_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RelationshipEd
         conf = float(row["confidence"])
         stype = str(row["source_type"])
         notes = str(row["notes"])
+        keys = row.keys() if hasattr(row, "keys") else ()
+        kinship_raw = row["kinship"] if "kinship" in keys else None
+        dh = row["delta_hierarchy"] if "delta_hierarchy" in keys else None
+        aff = row["affinity"] if "affinity" in keys else None
+        reg = row["register"] if "register" in keys else None
     else:
         src, tgt, kind_raw, spk_pro, lis_pro, conf, stype, notes = row[:8]
         conf = float(conf)
+        if len(row) >= 12:
+            kinship_raw = row[8]
+            dh = row[9]
+            aff = row[10]
+            reg = row[11]
+        else:
+            kinship_raw, dh, aff, reg = None, None, None, None
 
     try:
         kind = RelationshipKind(kind_raw)
@@ -292,6 +294,18 @@ def _relationship_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RelationshipEd
             kind = RelationshipKind.from_str(str(kind_raw))
         except ValueError:
             kind = RelationshipKind.FORMAL_ACQUAINTANCE
+
+    if kinship_raw is None:
+        from renslate.core.models import _infer_vector_from_legacy_edge
+
+        vector = _infer_vector_from_legacy_edge(kind, spk_pro, lis_pro)
+    else:
+        vector = RelationalVector(
+            kinship=KinshipKind.from_str(str(kinship_raw)),
+            delta_hierarchy=float(dh if dh is not None else 0.0),
+            affinity=float(aff if aff is not None else 0.0),
+            register=float(reg if reg is not None else 0.5),
+        )
 
     return RelationshipEdge(
         source_tag=src,
@@ -302,6 +316,7 @@ def _relationship_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RelationshipEd
         confidence=conf,
         source_type=stype,
         notes=notes,
+        vector=vector,
     )
 
 
@@ -516,6 +531,9 @@ class CharacterRepository:
             )
         return res
 
+    def get_character(self, tag: str) -> CharacterProfile | None:
+        return self.get_characters().get(tag)
+
     def save_character(self, profile: CharacterProfile) -> None:
         self.save_characters_bulk([profile])
 
@@ -591,6 +609,10 @@ class RelationshipRepository:
                 edge.confidence,
                 edge.source_type,
                 edge.notes,
+                edge.vector.kinship.value,
+                edge.vector.delta_hierarchy,
+                edge.vector.affinity,
+                edge.vector.register,
             ),
         )
 
@@ -607,6 +629,10 @@ class RelationshipRepository:
                 e.confidence,
                 e.source_type,
                 e.notes,
+                e.vector.kinship.value,
+                e.vector.delta_hierarchy,
+                e.vector.affinity,
+                e.vector.register,
             )
             for e in edges
         ]
@@ -779,13 +805,14 @@ class TMRepository:
         )
 
     def save(self, entry: TMEntry) -> None:
+        origin_val = entry.origin.value if hasattr(entry.origin, "value") else str(entry.origin)
         self._conn.execute(
             _SQL_UPSERT_TM,
             (
                 entry.src_norm,
                 entry.target,
                 entry.uses,
-                entry.origin.value,
+                origin_val,
                 entry.updated_at or utc_timestamp(),
             ),
         )
@@ -822,55 +849,3 @@ class BatchRepository:
                 stamp,
             ),
         )
-
-
-class GlossaryRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
-
-    def get_all(self) -> list[GlossaryEntry]:
-        rows = self._conn.execute(_SQL_SELECT_GLOSSARY).fetchall()
-        res: list[GlossaryEntry] = []
-        for r in rows:
-            aliases_raw = r["aliases"]
-            aliases = tuple(json.loads(aliases_raw)) if aliases_raw else ()
-            res.append(
-                GlossaryEntry(
-                    term=r["term"],
-                    translation=r["translation"],
-                    kind=r["kind"],
-                    case_sensitive=bool(r["case_sensitive"]),
-                    aliases=aliases,
-                    notes=r["notes"],
-                )
-            )
-        return res
-
-    def save(self, entry: GlossaryEntry) -> None:
-        self._conn.execute(
-            _SQL_UPSERT_GLOSSARY,
-            (
-                entry.term,
-                entry.translation,
-                entry.kind,
-                1 if entry.case_sensitive else 0,
-                json.dumps(list(entry.aliases), ensure_ascii=False),
-                entry.notes,
-            ),
-        )
-
-    def save_bulk(self, entries: Sequence[GlossaryEntry]) -> None:
-        if not entries:
-            return
-        payload = [
-            (
-                e.term,
-                e.translation,
-                e.kind,
-                1 if e.case_sensitive else 0,
-                json.dumps(list(e.aliases), ensure_ascii=False),
-                e.notes,
-            )
-            for e in entries
-        ]
-        self._conn.executemany(_SQL_UPSERT_GLOSSARY, payload)

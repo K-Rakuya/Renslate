@@ -448,7 +448,6 @@ class DashboardSnapshot:
     total_slots: int
     kind_counts: dict[str, int]
     character_count: int
-    glossary_count: int
     tm_count: int
     top_speakers: list[tuple[str, int]]
     recent_units: list[dict[str, Any]]
@@ -499,8 +498,6 @@ def query_dashboard_snapshot(
         slots = db.count_slots()
         char_row = db.execute("SELECT COUNT(*) FROM characters").fetchone()
         char_count = char_row[0] if char_row else 0
-        gloss_row = db.execute("SELECT COUNT(*) FROM glossary").fetchone()
-        glossary_count = gloss_row[0] if gloss_row else 0
         tm_row = db.execute("SELECT COUNT(*) FROM tm").fetchone()
         tm_count = tm_row[0] if tm_row else 0
         scene_row = db.execute("SELECT COUNT(*) FROM scenes").fetchone()
@@ -567,7 +564,6 @@ def query_dashboard_snapshot(
         total_slots=slots,
         kind_counts=kind_counts,
         character_count=char_count,
-        glossary_count=glossary_count,
         tm_count=tm_count,
         top_speakers=top_speakers,
         recent_units=recent_units,

@@ -18,7 +18,6 @@ from renslate.core.errors import LLMError
 from renslate.core.models import (
     LOCKED_ORIGINS,
     BatchLog,
-    GlossaryEntry,
     Origin,
     SceneMacroContext,
     Status,
@@ -32,7 +31,6 @@ from renslate.engine.context import (
     LookbackItem,
     estimate_tokens,
 )
-from renslate.engine.glossary import Glossary
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.hallucination import (
     HallucinationGuard,
@@ -97,7 +95,6 @@ class TranslationStats:
 class _PreparedBatch:
     batch: Sequence[Unit]
     batch_id: str
-    glossary_matches: Sequence[GlossaryEntry]
     fuzzy_hints: dict[str, list[FuzzyMatch]]
     active_scene: Any
     system_prompt: str
@@ -428,13 +425,14 @@ class TranslationPipeline:
         graph: RelationshipGraph | None = None,
         resolver: InterlocutorResolver | None = None,
         hallucination_guard: HallucinationGuard | None = None,
+        *,
+        use_transgraph: bool = True,
     ) -> None:
         self.project = project
         self.db = db
         self.config = config
         self.tm = TranslationMemory(db)
-        # Glossary mechanism disabled during translation to prevent vocabulary pollution
-        self.glossary = Glossary([])
+        self.use_transgraph = use_transgraph
 
         self.characters = db.get_characters()
         self.scenes = db.get_scenes()
@@ -480,7 +478,9 @@ class TranslationPipeline:
         style_path = project.work_dir / "style.md"
         if style_path.is_file():
             style_guide = style_path.read_text(encoding="utf-8")
-        self.context = ContextBuilder(config, custom_style_guide=style_guide)
+        self.context = ContextBuilder(
+            config, custom_style_guide=style_guide, use_transgraph=use_transgraph
+        )
 
     def refresh_knowledge(self) -> None:
         """Re-read data other tools changed and fix character facts from script evidence.
@@ -618,7 +618,6 @@ class TranslationPipeline:
         # Strictly sort units by sequence order (seq, uid)
         batch = sorted(batch, key=lambda u: (u.seq, u.uid))
         batch_id = f"b_{uuid.uuid4().hex[:12]}"
-        glossary_matches: Sequence[GlossaryEntry] = ()
 
         # Collect fuzzy matches for prompt hints
         fuzzy_hints: dict[str, list[FuzzyMatch]] = {}
@@ -705,7 +704,6 @@ class TranslationPipeline:
         return _PreparedBatch(
             batch=batch,
             batch_id=batch_id,
-            glossary_matches=glossary_matches,
             fuzzy_hints=fuzzy_hints,
             active_scene=active_scene,
             system_prompt=system_prompt,
@@ -764,7 +762,6 @@ class TranslationPipeline:
 
         user_prompt = self.context.build_user_prompt(
             batch_units=batch,
-            glossary_matches=prep.glossary_matches,
             characters=self.characters,
             scene_summary=prep.active_scene,
             scene_macro=prep.scene_macro,
@@ -773,6 +770,7 @@ class TranslationPipeline:
             graph=self.graph,
             resolver=self.resolver,
             retry_feedback=retry_feedback,
+            transgraph=self.use_transgraph,
         )
 
         try:
@@ -1047,7 +1045,6 @@ class TranslationPipeline:
                 u.source,
                 masked_for_qa,
                 final_target,
-                glossary_matches=(),
                 speaker=u.speaker,
                 pronoun_rules=pronoun_rules,
             )

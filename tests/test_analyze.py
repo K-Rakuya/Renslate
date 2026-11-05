@@ -106,14 +106,13 @@ def test_run_analysis_pipeline(tmp_path: Path) -> None:
     assert stats["characters"] >= 1
     assert stats["scenes"] >= 1
     assert (project.work_dir / "characters.json").is_file()
-    assert (project.work_dir / "glossary.json").is_file()
 
 
 def test_infer_character_role_and_gender_nlp() -> None:
     # 1. Role inference
-    assert infer_character_role_nlp("mc", 50, 100) == "Nhân vật chính (Protagonist)"
+    assert infer_character_role_nlp("mc", 50, 100, is_protagonist=True) == "Nhân vật chính (Protagonist)"
     assert infer_character_role_nlp("narrator", 1, 100) == "Người dẫn chuyện (Narrator)"
-    assert infer_character_role_nlp("hero", 1, 100) == "Nhân vật chính (Protagonist)"
+    assert infer_character_role_nlp("hero", 1, 100, is_protagonist=True) == "Nhân vật chính (Protagonist)"
     assert infer_character_role_nlp("layla", 10, 100) == "Nhân vật chính tuyến (Main Cast)"
     assert infer_character_role_nlp("guard", 1, 100) == "Nhân vật phụ (Supporting Cast)"
     assert infer_character_role_nlp("villager", 0, 100) == ""

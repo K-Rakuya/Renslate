@@ -43,7 +43,6 @@ from renslate.core.models import (
     ApplyTarget,
     BatchLog,
     CharacterProfile,
-    GlossaryEntry,
     Origin,
     QAIssue,
     RelationshipEdge,
@@ -76,19 +75,11 @@ from renslate.engine.context import (
     LookbackItem,
     estimate_tokens,
 )
-from renslate.engine.glossary import (
-    Glossary,
-    clean_glossary,
-    is_valid_glossary_term,
-    mine_glossary_candidates,
-    translate_glossary_with_llm,
-)
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, extract_json_object
 from renslate.engine.qa import (
     QAChecker,
     clean_translation,
-    repair_glossary_leakage,
 )
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, normalize_source
 from renslate.engine.translate import (
@@ -208,7 +199,6 @@ _LEGACY_MAP: dict[str, str] = {
     "renslate.llm": "renslate.engine.llm",
     "renslate.context": "renslate.engine.context",
     "renslate.qa": "renslate.engine.qa",
-    "renslate.glossary": "renslate.engine.glossary",
     "renslate.tm": "renslate.engine.tm",
     "renslate.analyze": "renslate.engine.analyze",
     "renslate.tsvio": "renslate.engine.tsvio",
@@ -267,9 +257,6 @@ __all__ = [
     "Database",
     "ExtractReport",
     "FuzzyMatch",
-    # Glossary
-    "Glossary",
-    "GlossaryEntry",
     "Issue",
     # LLM
     "LLMClient",
@@ -331,7 +318,6 @@ __all__ = [
     "bootstrap_characters_with_llm",
     "build_command",
     "check_server_health",
-    "clean_glossary",
     "clean_translation",
     # Subpackages
     "core",
@@ -359,9 +345,7 @@ __all__ = [
     "import_tsv",
     "infer_character_gender_nlp",
     "infer_character_role_nlp",
-    "is_valid_glossary_term",
     "mask",
-    "mine_glossary_candidates",
     "normalize_source",
     "parse_python_string",
     "parse_say",
@@ -373,7 +357,6 @@ __all__ = [
     "reconcile_translation",
     "render_progress_bar",
     "renpy",
-    "repair_glossary_leakage",
     # Analysis
     "run_analysis",
     "run_interactive_wizard",
@@ -384,7 +367,6 @@ __all__ = [
     "string_uid",
     "strip_ansi",
     "tokenize",
-    "translate_glossary_with_llm",
     "ui",
     "unmask",
     "utc_timestamp",

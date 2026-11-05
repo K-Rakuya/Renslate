@@ -22,7 +22,6 @@ from renslate.core.config import Config, LLMConfig
 from renslate.core.errors import LLMError
 from renslate.core.models import (
     CharacterProfile,
-    GlossaryEntry,
     Origin,
     SceneSummary,
     Status,
@@ -359,8 +358,7 @@ class TestTier5AdversarialSceneMacroContextBudgetCompaction:
             label="scene_dungeon_dark",
             summary="A short summary.",
         )
-        glossary = [GlossaryEntry("sword", "kiếm", "weapon")]
-        prompt = cb.build_user_prompt(units, glossary_matches=glossary, scene_summary=summary)
+        prompt = cb.build_user_prompt(units, scene_summary=summary)
         for u in units:
             assert u.uid in prompt
 
@@ -538,11 +536,6 @@ class TestTier5AdversarialRunnerErrorRecoveryAndBootstrap:
             }),
             encoding="utf-8",
         )
-        glossary_file = project.work_dir / "glossary.json"
-        glossary_file.write_text(
-            json.dumps([{"term": "Sect", "translation": "Tông môn", "notes": ""}]),
-            encoding="utf-8",
-        )
 
         with project.open_db() as db:
             for _ in range(5):
@@ -552,10 +545,6 @@ class TestTier5AdversarialRunnerErrorRecoveryAndBootstrap:
             assert len(chars) == 2
             assert "ren" in chars
             assert "eileen" in chars
-
-            cur_glossary = db.get_glossary()
-            assert len(cur_glossary) == 1
-            assert cur_glossary[0].term == "Sect"
 
     def test_bootstrap_with_corrupted_characters_json(self, tmp_path: Path) -> None:
         """Verify bootstrap_if_needed handles corrupted characters.json without crashing."""

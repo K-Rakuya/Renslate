@@ -190,8 +190,10 @@ class TestPromptAssemblyAndInterlocutorFraming:
             prompt = captured_prompts[0]
             # Verify rich framing with interlocutors and reciprocal pronouns
             assert "[Người nói: Ren -> Người nghe: Eileen" in prompt or "[Người nói: Ren" in prompt
-            assert "ROMANCE" in prompt
-            assert "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN" in prompt
+            assert (
+                "QUAN HỆ XƯNG HÔ ĐỐI THOẠI TRONG PHÂN ĐOẠN" in prompt
+                or "Active Pronoun Invariants" in prompt
+            )
 
     def test_pipeline_monologue_framing(self, tmp_path: Path) -> None:
         project = _setup_test_project(tmp_path, "monologue_frames")

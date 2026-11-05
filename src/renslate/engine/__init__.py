@@ -16,19 +16,11 @@ from renslate.engine.context import (
     LookbackItem,
     estimate_tokens,
 )
-from renslate.engine.glossary import (
-    Glossary,
-    clean_glossary,
-    is_valid_glossary_term,
-    mine_glossary_candidates,
-    translate_glossary_with_llm,
-)
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.llm import LLMClient, extract_json_object
 from renslate.engine.qa import (
     QAChecker,
     clean_translation,
-    repair_glossary_leakage,
 )
 from renslate.engine.relationships import bootstrap_relationships_with_llm
 from renslate.engine.scenes import summarize_scenes_with_llm, summarize_single_scene_with_llm
@@ -46,8 +38,6 @@ __all__ = [
     # Context
     "ContextBuilder",
     "FuzzyMatch",
-    # Glossary
-    "Glossary",
     # LLM
     "LLMClient",
     "LookbackItem",
@@ -62,7 +52,6 @@ __all__ = [
     "TranslationStats",
     "bootstrap_characters_with_llm",
     "bootstrap_relationships_with_llm",
-    "clean_glossary",
     "clean_translation",
     "estimate_tokens",
     # TSV I/O
@@ -72,15 +61,11 @@ __all__ = [
     "import_tsv",
     "infer_character_gender_nlp",
     "infer_character_role_nlp",
-    "is_valid_glossary_term",
-    "mine_glossary_candidates",
     "normalize_source",
     "partition_batches",
-    "repair_glossary_leakage",
     # Analysis
     "run_analysis",
     "segment_scenes",
     "summarize_scenes_with_llm",
     "summarize_single_scene_with_llm",
-    "translate_glossary_with_llm",
 ]
