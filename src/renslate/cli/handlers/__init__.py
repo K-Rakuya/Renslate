@@ -13,10 +13,12 @@ from renslate.cli.handlers.project import (
 )
 from renslate.cli.handlers.qa import cmd_clean_db, cmd_qa
 from renslate.cli.handlers.tools import (
+    cmd_board,
     cmd_dashboard,
     cmd_decompile,
     cmd_font,
     cmd_status,
+    cmd_studio,
     cmd_wizard,
 )
 from renslate.cli.handlers.translation import cmd_preview, cmd_run, cmd_translate
@@ -24,6 +26,7 @@ from renslate.cli.handlers.translation import cmd_preview, cmd_run, cmd_translat
 __all__ = [
     "cmd_analyze",
     "cmd_apply",
+    "cmd_board",
     "cmd_bootstrap",
     "cmd_clean_db",
     "cmd_dashboard",
@@ -38,6 +41,7 @@ __all__ = [
     "cmd_qa",
     "cmd_run",
     "cmd_status",
+    "cmd_studio",
     "cmd_translate",
     "cmd_wizard",
     "get_project_root",

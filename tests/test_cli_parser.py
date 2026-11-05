@@ -64,3 +64,19 @@ def test_parser_backward_aliases_wizard_interactive() -> None:
     args_ia = parser.parse_args(["interactive", "--classic"])
     assert args_ia.command == "interactive"
     assert args_ia.classic is True
+
+
+def test_parser_board_and_studio_subcommands() -> None:
+    parser = build_parser()
+    args_board = parser.parse_args(["board"])
+    assert args_board.command == "board"
+
+    args_ctrl = parser.parse_args(["control-board"])
+    assert args_ctrl.command == "control-board"
+
+    args_studio = parser.parse_args(["studio"])
+    assert args_studio.command == "studio"
+
+    args_live = parser.parse_args(["live"])
+    assert args_live.command == "live"
+

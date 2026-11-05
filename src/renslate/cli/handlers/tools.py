@@ -171,3 +171,66 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     classic = getattr(args, "classic", False)
     use_menu = getattr(args, "menu", False) or (not classic and sys.stdin.isatty())
     return run_interactive_wizard(get_project_root(args), interactive_menu=use_menu)
+
+
+def cmd_board(args: argparse.Namespace) -> int:
+    """Launch interactive TUI Control Board for 2026 quality flags."""
+    root = get_project_root(args)
+    try:
+        project = Project.open(root)
+    except Exception:
+        project = Project.create(root) if (root / "game").is_dir() else None
+
+    from renslate.ui.control_board import run_control_board
+
+    cfg_dict, action = run_control_board(project)
+    if action == "START" and cfg_dict is not None and project is not None:
+        from renslate.ui.runner import run_unattended_pipeline
+
+        chunk = int(cfg_dict.get("batch_size", 8))
+        return run_unattended_pipeline(
+            project.root,
+            batch_chunk=chunk,
+            guard=bool(cfg_dict.get("guard", True)),
+            concise_tags=bool(cfg_dict.get("concise_tags", False)),
+            auto_apply=bool(cfg_dict.get("auto_apply", False)),
+        )
+    return 0
+
+
+def cmd_studio(args: argparse.Namespace) -> int:
+    """Launch real-time bilingual translation studio and in-place editor."""
+    root = get_project_root(args)
+    try:
+        project = Project.open(root)
+    except Exception:
+        if (root / "game").is_dir():
+            project = Project.create(root)
+        else:
+            print(f"Lỗi: Thư mục không phải dự án Ren'Py hợp lệ: {root}", file=sys.stderr)
+            return 1
+
+    from renslate.core.models import LiveDialogueItem
+    from renslate.ui.studio import StudioState, run_studio_session
+
+    state = StudioState()
+    with project.open_db() as db:
+        recent = db.all_units()
+        for u in recent:
+            if u.target:
+                state.add_or_update_unit(
+                    LiveDialogueItem(
+                        uid=u.uid,
+                        seq=u.seq,
+                        speaker=u.speaker or "",
+                        listener=None,
+                        source=u.source,
+                        target=u.target,
+                        status=u.status.value,
+                        origin=u.origin.value if u.origin else "manual",
+                        qa_issues=u.qa_flags,
+                    )
+                )
+
+        run_studio_session(project, state=state, db=db)
+    return 0

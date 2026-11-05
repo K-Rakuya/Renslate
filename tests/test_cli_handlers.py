@@ -9,7 +9,7 @@ import pytest
 
 from renslate.cli.handlers.project import cmd_init
 from renslate.cli.handlers.qa import cmd_clean_db
-from renslate.cli.handlers.tools import cmd_status
+from renslate.cli.handlers.tools import cmd_board, cmd_status, cmd_studio
 from renslate.core.project import Project
 
 
@@ -43,3 +43,22 @@ def test_cmd_clean_db_execution(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert ret == 0
     captured = capsys.readouterr()
     assert "Đã làm sạch" in captured.out
+
+
+def test_cmd_board_and_studio_dispatch(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    (tmp_path / "game").mkdir()
+    Project.create(tmp_path)
+    args = argparse.Namespace(project=str(tmp_path))
+
+    with patch("renslate.ui.control_board.run_control_board", return_value=(None, "QUIT")) as mock_cb:
+        ret_b = cmd_board(args)
+        assert ret_b == 0
+        assert mock_cb.call_count == 1
+
+    with patch("renslate.ui.studio.run_studio_session", return_value=(None, "QUIT")) as mock_st:
+        ret_s = cmd_studio(args)
+        assert ret_s == 0
+        assert mock_st.call_count == 1
+

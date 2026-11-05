@@ -9,6 +9,7 @@ from renslate import __version__
 from renslate.cli.handlers import (
     cmd_analyze,
     cmd_apply,
+    cmd_board,
     cmd_bootstrap,
     cmd_clean_db,
     cmd_dashboard,
@@ -23,6 +24,7 @@ from renslate.cli.handlers import (
     cmd_qa,
     cmd_run,
     cmd_status,
+    cmd_studio,
     cmd_translate,
     cmd_wizard,
 )
@@ -370,5 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_wizard_args(wiz_cmd)
     interactive_cmd = add("interactive", cmd_wizard, "trình hướng dẫn thiết lập tương tác (alias)")
     _add_wizard_args(interactive_cmd)
+
+    add("board", cmd_board, "mở Bảng Điều Khiển Cờ và cấu hình tính năng dịch 2026 trực quan")
+    add("control-board", cmd_board, "mở Bảng Điều Khiển Cờ trực quan (alias)")
+
+    add("studio", cmd_studio, "mở Live Translation Studio xem full câu thoại và sửa tại chỗ")
+    add("live", cmd_studio, "mở Live Translation Studio xem full câu thoại (alias)")
 
     return parser
