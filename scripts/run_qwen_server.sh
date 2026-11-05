@@ -34,8 +34,8 @@ export GGML_CUDA_GRAPH_OPT="${GGML_CUDA_GRAPH_OPT:-1}"
 export GGML_CUDA_REGISTER_HOST="${GGML_CUDA_REGISTER_HOST:-1}"
 unset GGML_CUDA_NO_PINNED # Đảm bảo bật Pinned Memory (nếu set bất kỳ giá trị nào kể cả 0 thì C++ getenv!=null sẽ tắt)
 
-DEFAULT_SERVER_BIN="/path/to/storage Llama/bin/b11838-native/bin/llama-server"
-DEFAULT_MODEL_PATH="${RENSLATE_MODEL_PATH:-/path/to/models/model.gguf}"
+DEFAULT_SERVER_BIN="/path/to/llama-server/llama-server"
+DEFAULT_MODEL_PATH="/path/to/models/Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
 
 SERVER_BIN="${RENSLATE_SERVER_BIN:-$DEFAULT_SERVER_BIN}"
 MODEL_PATH="${RENSLATE_MODEL_PATH:-$DEFAULT_MODEL_PATH}"
