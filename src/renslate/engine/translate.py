@@ -31,6 +31,10 @@ from renslate.engine.context import (
     LookbackItem,
     estimate_tokens,
 )
+from renslate.engine.context.builder import build_transgraph_frame
+from renslate.engine.context.exemplars import ExemplarItem, TMDyadExemplarRetriever
+from renslate.engine.context.narrative_memory import GroundedDialogueTurn, NarrativeMemory
+from renslate.engine.deliberate import DeliberativeGate, DeliberativeReflector
 from renslate.engine.graph import RelationshipGraph
 from renslate.engine.hallucination import (
     HallucinationGuard,
@@ -39,6 +43,7 @@ from renslate.engine.hallucination import (
 from renslate.engine.knowledge import refresh_character_genders
 from renslate.engine.llm import LLMClient, generate_batch_gbnf
 from renslate.engine.qa import _CJK_PATTERN, QAChecker, clean_translation
+from renslate.engine.qa.calque_density import compute_calque_density
 from renslate.engine.repair import RetryLadder, UnitFailure
 from renslate.engine.scenes import load_scene_contexts
 from renslate.engine.tm import FuzzyMatch, TranslationMemory, is_context_sensitive_line
@@ -103,6 +108,18 @@ class _PreparedBatch:
     budget: int
     single_key: str | None
     scene_macro: Any = None
+    exemplars: Sequence[ExemplarItem] = ()
+
+
+@dataclass(slots=True)
+class _UnitCandidate:
+    unit: Unit
+    final_target: str
+    cleaned: str
+    target_tag: str | None
+    pronoun_rules: tuple[str, str] | None
+    qa_issues: list[Any]
+    masked_for_qa: Any
 
 
 @dataclass(slots=True)
@@ -420,26 +437,50 @@ class TranslationPipeline:
     def __init__(
         self,
         project: Project,
-        db: Database,
-        config: Config,
+        db: Database | None = None,
+        config: Config | None = None,
         graph: RelationshipGraph | None = None,
         resolver: InterlocutorResolver | None = None,
         hallucination_guard: HallucinationGuard | None = None,
         *,
         use_transgraph: bool = True,
+        narrative_memory: NarrativeMemory | None = None,
+        exemplar_retriever: TMDyadExemplarRetriever | None = None,
+        deliberative_gate: DeliberativeGate | None = None,
+        deliberative_reflector: DeliberativeReflector | None = None,
     ) -> None:
         self.project = project
-        self.db = db
-        self.config = config
-        self.tm = TranslationMemory(db)
+        self.db = db if db is not None else getattr(project, "db", None)
+        self.config = config if config is not None else getattr(project, "config", Config())
+        self.tm = TranslationMemory(self.db) if self.db is not None else None
         self.use_transgraph = use_transgraph
 
-        self.characters = db.get_characters()
-        self.scenes = db.get_scenes()
-        self._scene_ctx = load_scene_contexts(db, self.scenes)
-        self.qa = QAChecker(max_length_ratio=config.qa.max_length_ratio)
-        self.llm = LLMClient(config.llm)
+        self.characters = self.db.get_characters() if self.db is not None else {}
+        self.scenes = self.db.get_scenes() if self.db is not None else []
+        self._scene_ctx = (
+            load_scene_contexts(self.db, self.scenes) if self.db is not None else {}
+        )
+        self.qa = QAChecker(max_length_ratio=self.config.qa.max_length_ratio)
+        self.llm = LLMClient(self.config.llm)
         self._retry_ladder = RetryLadder()
+
+        # Modernized 2026 Quality Components
+        self.narrative_memory = (
+            narrative_memory if narrative_memory is not None else NarrativeMemory(capacity=6)
+        )
+        self.exemplar_retriever = (
+            exemplar_retriever
+            if exemplar_retriever is not None
+            else TMDyadExemplarRetriever(self.db)
+        )
+        self.deliberative_gate = (
+            deliberative_gate if deliberative_gate is not None else DeliberativeGate()
+        )
+        self.deliberative_reflector = (
+            deliberative_reflector
+            if deliberative_reflector is not None
+            else DeliberativeReflector(self.llm)
+        )
 
         # Initialize RelationshipGraph (injected, synced from json, or loaded from db)
         if graph is not None:
@@ -448,19 +489,21 @@ class TranslationPipeline:
             rel_path = getattr(project, "relationships_path", None)
             if rel_path is None and hasattr(project, "work_dir"):
                 rel_path = project.work_dir / "relationships.json"
-            if rel_path and rel_path.is_file():
+            if rel_path and rel_path.is_file() and self.db is not None:
                 try:
-                    self.graph = RelationshipGraph.sync(db, rel_path)
+                    self.graph = RelationshipGraph.sync(self.db, rel_path)
                 except Exception:
                     try:
-                        self.graph = RelationshipGraph.from_db(db)
+                        self.graph = RelationshipGraph.from_db(self.db)
                     except Exception:
                         self.graph = RelationshipGraph()
-            else:
+            elif self.db is not None:
                 try:
-                    self.graph = RelationshipGraph.from_db(db)
+                    self.graph = RelationshipGraph.from_db(self.db)
                 except Exception:
                     self.graph = RelationshipGraph()
+            else:
+                self.graph = RelationshipGraph()
 
         # Initialize InterlocutorResolver
         self.resolver = resolver if resolver is not None else InterlocutorResolver()
@@ -679,7 +722,20 @@ class TranslationPipeline:
                 )
                 self._scene_ctx[active_scene.scene_id] = scene_macro
 
-        system_prompt = self.context.build_system_prompt()
+        active_spk = batch[0].speaker if batch else None
+        exemplar_sources = [u.source for u in batch]
+        exemplars = (
+            self.exemplar_retriever.retrieve_for_dyad(
+                speaker=active_spk,
+                listener=None,
+                sources=exemplar_sources,
+                max_results=2,
+            )
+            if self.exemplar_retriever is not None
+            else ()
+        )
+
+        system_prompt = self.context.build_system_prompt(exemplars=exemplars)
 
         has_cjk_source = any(_CJK_PATTERN.search(u.source) for u in batch)
         prop_schema: dict[str, Any] = {"type": "string"}
@@ -712,6 +768,7 @@ class TranslationPipeline:
             budget=budget,
             single_key=single_key,
             scene_macro=scene_macro,
+            exemplars=exemplars,
         )
 
     def _settle_batch(
@@ -758,14 +815,24 @@ class TranslationPipeline:
         batch_label = batch[0].label if batch else None
         if batch_label != self._current_scene_label:
             self.resolver.reset()
+            if self.narrative_memory is not None:
+                self.narrative_memory.clear()
             self._current_scene_label = batch_label
+
+        effective_lookback = list(lookback)
+        if not effective_lookback and self.narrative_memory:
+            for turn in self.narrative_memory:
+                if turn.target:
+                    effective_lookback.append(
+                        LookbackItem(turn.speaker, turn.source, turn.target)
+                    )
 
         user_prompt = self.context.build_user_prompt(
             batch_units=batch,
             characters=self.characters,
             scene_summary=prep.active_scene,
             scene_macro=prep.scene_macro,
-            lookback=list(lookback),
+            lookback=effective_lookback,
             fuzzy_matches=prep.fuzzy_hints,
             graph=self.graph,
             resolver=self.resolver,
@@ -805,6 +872,7 @@ class TranslationPipeline:
 
         unit_updates: list[tuple[Unit, str, tuple[str, ...], Status]] = []
         failed_units: list[UnitFailure] = []
+        candidates: list[_UnitCandidate] = []
 
         res_by_key: dict[str, str] = {}
         for k, v in result_map.items():
@@ -969,10 +1037,10 @@ class TranslationPipeline:
 
             masked_for_qa = masked if ("⟦" in final_target) else None
             pronoun_rules = None
+            target_tag: str | None = None
             if u.speaker and self.characters:
                 spk_clean = u.speaker.strip()
                 spk_prof = self.characters.get(spk_clean) or self.characters.get(spk_clean.lower())
-                target_tag: str | None = None
 
                 # 1. First attempt to resolve listener via InterlocutorResolver
                 resolved = self.resolver.resolve(
@@ -1079,10 +1147,116 @@ class TranslationPipeline:
                 prev_u = u
                 continue
 
+            candidates.append(
+                _UnitCandidate(
+                    unit=u,
+                    final_target=final_target,
+                    cleaned=cleaned,
+                    target_tag=target_tag,
+                    pronoun_rules=pronoun_rules,
+                    qa_issues=qa_issues,
+                    masked_for_qa=masked_for_qa,
+                )
+            )
+            prev_u = u
+
+        # ---------------------------------------------------------------------
+        # PASS 2: CONFIDENCE-GATED DELIBERATIVE REFLECTION
+        # TUYỆT ĐỐI KHÔNG DÙNG REGEX THAY THẾ CHUỖI TIẾNG VIỆT
+        # ---------------------------------------------------------------------
+        if candidates and self.deliberative_gate is not None and self.deliberative_reflector is not None:
+            cand_units = [c.unit for c in candidates]
+            cand_drafts = {c.unit.uid: c.final_target for c in candidates}
+            calque_scores = {
+                c.unit.uid: compute_calque_density(c.unit.source, c.final_target)
+                for c in candidates
+            }
+            cand_qa_issues = {c.unit.uid: c.qa_issues for c in candidates}
+
+            reflect_units = self.deliberative_gate.filter_reflection_batch(
+                cand_units,
+                cand_drafts,
+                calque_scores,
+                cand_qa_issues,
+                max_ratio=0.25,
+            )
+            if reflect_units:
+                tg_frame = (
+                    build_transgraph_frame(
+                        batch_units=batch,
+                        characters=self.characters,
+                        graph=self.graph,
+                        scene_macro=prep.scene_macro,
+                    )
+                    if self.use_transgraph
+                    else ""
+                )
+                refined_drafts = self.deliberative_reflector.refine_batch(
+                    cand_units,
+                    cand_drafts,
+                    {u.uid for u in reflect_units},
+                    transgraph_frame=tg_frame,
+                )
+                for c in candidates:
+                    refined = refined_drafts.get(c.unit.uid)
+                    if refined and refined != c.final_target:
+                        c.final_target = enforce_tag_invariants(c.unit.source, refined)
+                        c.qa_issues = self.qa.check_unit(
+                            c.unit.uid,
+                            c.unit.source,
+                            c.masked_for_qa,
+                            c.final_target,
+                            speaker=c.unit.speaker,
+                            pronoun_rules=c.pronoun_rules,
+                        )
+
+        for c in candidates:
+            u = c.unit
+            final_target = c.final_target
+            qa_issues = c.qa_issues
+            max_ratio = self.config.qa.max_length_ratio
+            is_runaway_loop = (
+                len(u.source) > 0
+                and len(final_target) > 100
+                and (len(final_target) / max(len(u.source), 1) > max(max_ratio * 1.5, 3.0))
+            )
+            has_error_issue = any(i.severity == "error" for i in qa_issues) or is_runaway_loop
+            if has_error_issue:
+                reason = (
+                    "runaway_loop"
+                    if is_runaway_loop
+                    else ", ".join(i.code for i in qa_issues if i.severity == "error")
+                )
+                _LOG.info(
+                    "Dòng %s không đạt validation (%s): '%s' -> '%s'",
+                    u.uid,
+                    reason,
+                    u.source,
+                    final_target,
+                )
+                failed_units.append(
+                    UnitFailure(
+                        u,
+                        "qa_error",
+                        "; ".join(i.message for i in qa_issues if i.severity == "error") or reason,
+                        final_target,
+                    )
+                )
+                continue
+
             flags = tuple(sorted(i.code for i in qa_issues))
             status = Status.QA_FLAGGED if flags else Status.TRANSLATED
             unit_updates.append((u, final_target, flags, status))
-            prev_u = u
+            if self.narrative_memory is not None:
+                self.narrative_memory.record(
+                    GroundedDialogueTurn(
+                        speaker=u.speaker,
+                        listener=c.target_tag,
+                        source=u.source,
+                        target=final_target,
+                        scene_id=batch_label or "",
+                    )
+                )
 
         if self.guard is not None and unit_updates:
             from dataclasses import replace

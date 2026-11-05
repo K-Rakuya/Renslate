@@ -29,6 +29,18 @@ class Origin(str, enum.Enum):
     MANUAL = "manual"
     SEED = "seed"
     IMPORTED = "imported"
+    USER = "manual"
+    REVIEW = "manual"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Origin | None:
+        if isinstance(value, str):
+            val_lower = value.lower()
+            if val_lower in ("user", "human"):
+                return cls.MANUAL
+            if val_lower in ("review", "reviewed"):
+                return cls.MANUAL
+        return None
 
 
 LOCKED_ORIGINS = frozenset({Origin.MANUAL, Origin.IMPORTED})
@@ -66,10 +78,10 @@ class Unit:
     """A translatable text, identified by uid and independent of where it is written."""
 
     uid: str
-    kind: UnitKind
-    seq: int
-    source: str
-    status: Status
+    kind: UnitKind = UnitKind.DIALOGUE
+    seq: int = 0
+    source: str = ""
+    status: Status = Status.PENDING
     ref: str | None = None
     speaker: str | None = None
     label: str | None = None

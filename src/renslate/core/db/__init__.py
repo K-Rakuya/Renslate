@@ -248,6 +248,25 @@ class Database:
     def save_tm(self, entry: TMEntry) -> None:
         self._tm_repo.save(entry)
 
+    def add_tm(
+        self,
+        src_norm: str,
+        target: str,
+        origin: Origin | str = Origin.LLM,
+        uses: int = 1,
+    ) -> None:
+        resolved_origin = origin
+        if isinstance(resolved_origin, str) and not isinstance(resolved_origin, Origin):
+            resolved_origin = Origin(resolved_origin)
+        self.save_tm(
+            TMEntry(
+                src_norm=src_norm,
+                target=target,
+                origin=resolved_origin,
+                uses=uses,
+            )
+        )
+
     def all_tm(self) -> list[TMEntry]:
         return self._tm_repo.all_entries()
 

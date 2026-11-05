@@ -34,6 +34,7 @@ from renslate.engine.context.tokens import estimate_tokens
 from renslate.engine.tm import FuzzyMatch
 
 if TYPE_CHECKING:
+    from renslate.engine.context.exemplars import ExemplarItem
     from renslate.engine.graph import RelationshipGraph
 
 __all__ = [
@@ -71,7 +72,10 @@ QUOTED_RULES = (
     "     phải xưng 'con/đệ tử' gọi 'sư phụ/cha/mẹ').\n"
     "   - TUYỆT ĐỐI KHÔNG đổi ngôi xưng hô thất thường trong cùng một câu thoại.\n"
     "3. Lời thoại súc tích, tự nhiên, văn phong visual novel, tránh dịch word-by-word.\n"
-    "   Giữ độ dài vừa phải để không làm tràn textbox.\n"
+    "   - Chuyển đổi linh hoạt câu bị động tiếng Anh sang câu chủ động hoặc câu biểu đạt "
+    "trải nghiệm tự nhiên trong tiếng Việt; tránh dùng 'bị/được ... bởi ...'.\n"
+    "   - Lược bỏ từ 'của' khi ngữ cảnh đã rõ quyền sở hữu.\n"
+    "   - Giữ độ dài vừa phải để không làm tràn textbox.\n"
     "4. QUY TẮC NỘI DUNG LỜI THOẠI:\n"
     "   - Nhãn [Người nói: ...] ở dòng nguồn chỉ dùng làm ngữ cảnh xưng hô.\n"
     "   - TUYỆT ĐỐI KHÔNG chép lại nhãn [Người nói: ...] hay tên nhân vật vào chuỗi kết quả.\n"
@@ -114,10 +118,13 @@ class ContextBundle:
     graph: RelationshipGraph | None = None
     resolver: Any | None = None
     transgraph: bool | None = None
+    exemplars: Sequence[ExemplarItem] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.lookback, tuple):
             object.__setattr__(self, "lookback", tuple(self.lookback))
+        if not isinstance(self.exemplars, tuple):
+            object.__setattr__(self, "exemplars", tuple(self.exemplars))
 
 
 def build_transgraph_frame(
@@ -372,16 +379,16 @@ class ContextBuilder:
 
     def __init__(
         self,
-        config: Config,
+        config: Config | None = None,
         custom_style_guide: str = "",
         *,
         use_transgraph: bool = False,
     ) -> None:
-        self.config = config
+        self.config = config if config is not None else Config()
         self.custom_style_guide = custom_style_guide
         self.use_transgraph = use_transgraph
 
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, exemplars: Sequence[ExemplarItem] | None = None) -> str:
         """Compose the cached system prompt with style guidelines."""
         prompt = DEFAULT_SYSTEM_PROMPT
         if self.config.style.default_register:
@@ -390,6 +397,12 @@ class ContextBuilder:
             prompt += f"\nLưu ý phong cách: {self.config.style.notes}."
         if self.custom_style_guide.strip():
             prompt += f"\n\nHướng dẫn phong cách riêng của game:\n{self.custom_style_guide.strip()}"
+        if exemplars:
+            from renslate.engine.context.exemplars import TMDyadExemplarRetriever
+
+            section = TMDyadExemplarRetriever.format_exemplars_section(exemplars)
+            if section:
+                prompt += f"\n\n{section}"
         return prompt
 
     @staticmethod
@@ -577,7 +590,8 @@ class ContextBuilder:
                 lines_section.append(f"{u.uid} | {speaker_tag}{text}")
         batch_text = "\n".join(lines_section)
 
-        system_text = self.build_system_prompt()
+        exemplars = bundle.exemplars if bundle and hasattr(bundle, "exemplars") else ()
+        system_text = self.build_system_prompt(exemplars=exemplars)
         sys_tokens = estimate_tokens(system_text)
         batch_tokens = estimate_tokens(batch_text)
         batch_source_tokens = sum(estimate_tokens(u.masked_source or u.source) for u in batch_units)

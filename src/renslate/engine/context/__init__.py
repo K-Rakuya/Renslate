@@ -10,10 +10,19 @@ from renslate.engine.context.builder import (
     LookbackItem,
     build_transgraph_frame,
 )
+from renslate.engine.context.exemplars import (
+    ExemplarItem,
+    TMDyadExemplarRetriever,
+    format_exemplars_section,
+)
 from renslate.engine.context.macro import (
     assemble_scene_macro_context,
     infer_scene_cues,
     update_scene_macro_from_flow,
+)
+from renslate.engine.context.narrative_memory import (
+    GroundedDialogueTurn,
+    NarrativeMemory,
 )
 from renslate.engine.context.prompt_frame import (
     _format_pronoun_pair,
@@ -55,9 +64,13 @@ __all__ = [
     "_TRAILING_VOCATIVE_RE",
     "ContextBuilder",
     "ContextBundle",
+    "ExemplarItem",
+    "GroundedDialogueTurn",
     "InterlocutorResolver",
     "LookbackItem",
+    "NarrativeMemory",
     "ResolvedInterlocutor",
+    "TMDyadExemplarRetriever",
     "_analyze_monologue_and_dialogue",
     "_extract_unit_file",
     "_format_pronoun_pair",
@@ -67,6 +80,7 @@ __all__ = [
     "assemble_scene_macro_context",
     "build_transgraph_frame",
     "estimate_tokens",
+    "format_exemplars_section",
     "format_rich_dialogue_line",
     "infer_scene_cues",
     "update_scene_macro_from_flow",

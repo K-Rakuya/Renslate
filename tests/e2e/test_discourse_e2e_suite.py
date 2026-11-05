@@ -1557,3 +1557,202 @@ aria "Thanks, Boris!"
             # Verify no encoding distortion
             encoded = src.encode("utf-8").decode("utf-8")
             assert encoded == src
+
+
+class TestDiscourseModernizedLiteraryQualityE2E:
+    """E2E suite verifying the 2026 Modernized Literary Translation Quality Architecture.
+
+    Covers:
+    - Task 1: AST Stage-Grounded Multi-Turn Narrative Memory
+    - Task 2: Reference-Free Syntactic Calque Density Scoring & Anti-Translationese
+    - Task 4: TransGraph Dyad-Aware Dynamic TM Exemplars
+    - Task 3: Confidence-Gated Deliberative Reflection Engine
+    - End-to-End Orchestration in TranslationPipeline
+    """
+
+    def test_end_to_end_literary_quality_pipeline_flow(self, tmp_path: Path) -> None:
+        from typing import Any
+        from unittest.mock import patch
+
+        from renslate.core.config import Config
+        from renslate.core.db import Database
+        from renslate.core.models import (
+            CharacterProfile,
+            Origin,
+            RelationshipEdge,
+            RelationshipKind,
+            Status,
+            Unit,
+            UnitKind,
+        )
+        from renslate.core.project import Project
+        from renslate.engine.graph import RelationshipGraph
+        from renslate.engine.translate import TranslationPipeline
+
+        game_dir = tmp_path / "test_vn_game"
+        game_dir.mkdir(parents=True)
+        (game_dir / "game").mkdir()
+        project = Project.create(game_dir)
+        cfg = Config()
+
+        db_path = project.db_path
+        with Database.open(db_path, create=True) as db:
+            # 1. Setup characters
+            p_hero = CharacterProfile(tag="hero", display_name="Lâm", role="Protagonist", gender="male")
+            p_sage = CharacterProfile(tag="sage", display_name="Bạch Lão", role="Master", gender="male")
+            db.save_character(p_hero)
+            db.save_character(p_sage)
+
+            # 2. Add verified TM exemplar
+            db.add_tm(
+                "Who is there?",
+                "Ai ở đó thế?",
+                origin=Origin.USER,
+            )
+
+            # 3. Add dialogue units with stage context
+            u1 = Unit(
+                uid="d:1",
+                kind=UnitKind.DIALOGUE,
+                seq=1,
+                source="Who is there?",
+                speaker="hero",
+                label="act1_scene1",
+                status=Status.PENDING,
+            )
+            u2 = Unit(
+                uid="d:2",
+                kind=UnitKind.DIALOGUE,
+                seq=2,
+                source="I was surprised by your arrival, master.",
+                speaker="hero",
+                label="act1_scene1",
+                status=Status.PENDING,
+            )
+            db.save_unit(u1)
+            db.save_unit(u2)
+
+        # Setup relationship graph
+        graph = RelationshipGraph()
+        graph.add_edge(
+            RelationshipEdge(
+                source_tag="hero",
+                target_tag="sage",
+                kind=RelationshipKind.SUPERIOR_SUBORDINATE,
+                speaker_pronoun="con",
+                listener_pronoun="sư phụ",
+            )
+        )
+        graph.add_edge(
+            RelationshipEdge(
+                source_tag="sage",
+                target_tag="hero",
+                kind=RelationshipKind.SUPERIOR_SUBORDINATE,
+                speaker_pronoun="ta",
+                listener_pronoun="con",
+            )
+        )
+
+        with Database.open(db_path) as db:
+            pipeline = TranslationPipeline(project, db, cfg, graph=graph)
+
+            # Pass 1 draft produces a stiff calque translation for u2
+            # Pass 2 deliberative reflection rewrites u2 into natural Vietnamese
+            call_count = 0
+
+            def mock_llm_json(sys_prompt: str, user_prompt: str, **kwargs: Any) -> Any:
+                nonlocal call_count
+                call_count += 1
+                if "QUY TẮC BẮT BUỘC" in user_prompt or "TINH CHỈNH" in user_prompt:
+                    # Deliberative reflection pass
+                    return {"d:2": "Sư phụ đến khiến con bất ngờ quá."}
+                return {
+                    "d:1": "Ai ở ngoài đó thế?",
+                    "d:2": "Con đã bị làm cho ngạc nhiên bởi sự đến của người, sư phụ.",
+                }, 100, 50
+
+            with patch.object(pipeline.llm, "complete_json", side_effect=mock_llm_json):
+                stats = pipeline.run()
+
+            assert stats.tm_reused == 1
+            assert stats.llm_translated == 1
+            assert stats.failed == 0
+            assert call_count == 2  # Pass 1 + Deliberative Pass 2
+
+            # Verify SQLite committed the exact TM reuse for u1
+            res_u1 = db.get_unit("d:1")
+            assert res_u1 is not None
+            assert res_u1.target == "Ai ở đó thế?"
+
+            # Verify SQLite committed the refined, natural translation for u2
+            res_u2 = db.get_unit("d:2")
+            assert res_u2 is not None
+            assert res_u2.target == "Sư phụ đến khiến con bất ngờ quá."
+
+            # Verify narrative memory contains the grounded dialogue turn for LLM translated line
+            assert len(pipeline.narrative_memory) >= 1
+            history_str = pipeline.narrative_memory.format_history("act1_scene1")
+            assert "hero" in history_str
+            assert "Sư phụ đến khiến con bất ngờ quá." in history_str
+
+    def test_pipeline_ast_scene_boundary_narrative_memory_flush(self, tmp_path: Path) -> None:
+        from typing import Any
+        from unittest.mock import patch
+
+        from renslate.core.config import Config
+        from renslate.core.db import Database
+        from renslate.core.models import Status, Unit, UnitKind
+        from renslate.core.project import Project
+        from renslate.engine.translate import TranslationPipeline
+
+        game_dir = tmp_path / "test_vn_game_scenes"
+        game_dir.mkdir(parents=True)
+        (game_dir / "game").mkdir()
+        project = Project.create(game_dir)
+        cfg = Config()
+
+        db_path = project.db_path
+        with Database.open(db_path, create=True) as db:
+            u1 = Unit(
+                uid="d:1",
+                kind=UnitKind.DIALOGUE,
+                seq=1,
+                source="Hello scene 1",
+                speaker="a",
+                label="scene_1",
+                status=Status.PENDING,
+            )
+            u2 = Unit(
+                uid="d:2",
+                kind=UnitKind.DIALOGUE,
+                seq=2,
+                source="Hello scene 2",
+                speaker="b",
+                label="scene_2",
+                status=Status.PENDING,
+            )
+            db.save_unit(u1)
+            db.save_unit(u2)
+
+        with Database.open(db_path) as db:
+            from renslate.engine.translate import TranslationStats
+            pipeline = TranslationPipeline(project, db, cfg)
+
+            def mock_llm(sys_prompt: str, user_prompt: str, **kwargs: Any) -> Any:
+                return {"d:1": "Chào cảnh 1", "d:2": "Chào cảnh 2"}, 50, 20
+
+            stats = TranslationStats()
+            with patch.object(pipeline.llm, "complete_json", side_effect=mock_llm):
+                # Run batch 1 (scene_1)
+                pipeline._settle_batch([u1], 1, [], stats)
+
+            assert len(pipeline.narrative_memory) == 1
+            assert pipeline.narrative_memory.turns[0].scene_id == "scene_1"
+
+            with patch.object(pipeline.llm, "complete_json", side_effect=mock_llm):
+                # Run batch 2 (scene_2) -> triggers scene boundary reset
+                pipeline._settle_batch([u2], 2, [], stats)
+
+            # Narrative memory flushed scene_1 and now only contains scene_2
+            assert len(pipeline.narrative_memory) == 1
+            assert pipeline.narrative_memory.turns[0].scene_id == "scene_2"
