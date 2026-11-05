@@ -157,3 +157,38 @@ def test_cli_run_with_concise_tags_flag(project_root: Path) -> None:
         assert main(["run", "-p", str(project_root), "--concise-tags"]) == 0
         assert mock_runner.call_args.kwargs.get("concise_tags") is True
 
+
+def test_cli_translate_with_modern_2026_literary_flags(project_root: Path) -> None:
+    with (
+        patch(
+            "renslate.engine.llm.LLMClient.complete_json",
+            return_value=({"d:start_a1b2c3d4": "Xin chào!"}, 50, 20),
+        ),
+        patch("renslate.cli.TranslationPipeline") as mock_pipeline_cls,
+    ):
+        mock_pipeline = mock_pipeline_cls.return_value
+        from renslate.engine.translate import TranslationStats
+
+        mock_pipeline.run.return_value = TranslationStats()
+        ret = main([
+            "translate",
+            "-p",
+            str(project_root),
+            "--limit",
+            "1",
+            "--deliberate",
+            "--calque-threshold",
+            "0.40",
+            "--exemplars",
+            "3",
+            "--narrative-memory",
+            "8",
+            "--transgraph",
+        ])
+        assert ret == 0
+        kwargs = mock_pipeline_cls.call_args.kwargs
+        assert kwargs["use_transgraph"] is True
+        assert kwargs["narrative_memory"].capacity == 8
+        assert kwargs["deliberative_gate"].calque_threshold == 0.40
+
+

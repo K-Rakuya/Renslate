@@ -620,12 +620,30 @@ class QAIssue:
     message: str
 
 
+@dataclass
+class LiveDialogueItem:
+    """A fully-grounded bilingual dialogue unit streamed in real-time."""
+
+    uid: str
+    seq: int
+    speaker: str
+    listener: str | None = None
+    source: str = ""
+    target: str = ""
+    status: str = "translated"
+    origin: str = "llm"
+    calque_score: float = 0.0
+    qa_issues: tuple[str, ...] = ()
+    updated_at: str = ""
+
+
 __all__ = [
     "LOCKED_ORIGINS",
     "ApplyTarget",
     "BatchLog",
     "CharacterProfile",
     "KinshipKind",
+    "LiveDialogueItem",
     "Origin",
     "QAIssue",
     "RelationalVector",

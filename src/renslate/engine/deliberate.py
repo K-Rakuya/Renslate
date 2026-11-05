@@ -55,6 +55,9 @@ def _has_rhetorical_complexity(unit: Unit, draft_text: str) -> bool:
 class DeliberativeGate:
     """Evaluates completed draft translations to selectively identify units needing reflection."""
 
+    def __init__(self, calque_threshold: float = 0.35) -> None:
+        self.calque_threshold = calque_threshold
+
     def should_reflect(
         self,
         unit: Unit,
@@ -62,7 +65,7 @@ class DeliberativeGate:
         calque_score: float = 0.0,
         qa_issues: Sequence[Any] | None = None,
     ) -> bool:
-        if calque_score >= 0.35:
+        if calque_score >= self.calque_threshold:
             return True
         if qa_issues:
             for issue in qa_issues:

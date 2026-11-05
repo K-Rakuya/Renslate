@@ -18,6 +18,7 @@ from renslate.core.errors import LLMError
 from renslate.core.models import (
     LOCKED_ORIGINS,
     BatchLog,
+    LiveDialogueItem,
     Origin,
     SceneMacroContext,
     Status,
@@ -448,6 +449,7 @@ class TranslationPipeline:
         exemplar_retriever: TMDyadExemplarRetriever | None = None,
         deliberative_gate: DeliberativeGate | None = None,
         deliberative_reflector: DeliberativeReflector | None = None,
+        unit_cb: Callable[[Any], None] | None = None,
     ) -> None:
         self.project = project
         self.db = db if db is not None else getattr(project, "db", None)
@@ -481,6 +483,7 @@ class TranslationPipeline:
             if deliberative_reflector is not None
             else DeliberativeReflector(self.llm)
         )
+        self.unit_cb = unit_cb
 
         # Initialize RelationshipGraph (injected, synced from json, or loaded from db)
         if graph is not None:
@@ -546,8 +549,11 @@ class TranslationPipeline:
         limit: int | None = None,
         include_failed: bool = False,
         progress_cb: ProgressCallback | None = None,
+        unit_cb: Callable[[Any], None] | None = None,
     ) -> TranslationStats:
         """Execute the translation pipeline over pending units."""
+        if unit_cb is not None:
+            self.unit_cb = unit_cb
         stats = TranslationStats()
         self.refresh_knowledge()
         pending = self.db.pending_units(limit=limit, include_failed=include_failed)
@@ -582,6 +588,22 @@ class TranslationPipeline:
                     self.tm.record(u.source, seed, origin=Origin.SEED)
                     stats.seeded += 1
                     lookback_buffer.append(LookbackItem(u.speaker, u.source, seed))
+                    if self.unit_cb is not None:
+                        self.unit_cb(
+                            LiveDialogueItem(
+                                uid=u.uid,
+                                seq=u.seq,
+                                speaker=u.speaker or "",
+                                listener=None,
+                                source=u.source,
+                                target=seed,
+                                status=Status.TRANSLATED.value,
+                                origin=Origin.SEED.value,
+                                calque_score=0.0,
+                                qa_issues=(),
+                                updated_at=utc_timestamp(),
+                            )
+                        )
                     continue
 
                 tm_entry = self.tm.lookup_exact_entry(u.source) or self.tm.lookup_exact_entry(
@@ -601,6 +623,22 @@ class TranslationPipeline:
                         )
                         stats.tm_reused += 1
                         lookback_buffer.append(LookbackItem(u.speaker, u.source, tm_match))
+                        if self.unit_cb is not None:
+                            self.unit_cb(
+                                LiveDialogueItem(
+                                    uid=u.uid,
+                                    seq=u.seq,
+                                    speaker=u.speaker or "",
+                                    listener=None,
+                                    source=u.source,
+                                    target=tm_match,
+                                    status=Status.TRANSLATED.value,
+                                    origin=Origin.TM.value,
+                                    calque_score=0.0,
+                                    qa_issues=(),
+                                    updated_at=utc_timestamp(),
+                                )
+                            )
                         continue
                     stats.tm_context_skipped += 1
 
@@ -1336,6 +1374,35 @@ class TranslationPipeline:
                         created_at=utc_timestamp(),
                     )
                 )
+
+                if self.unit_cb is not None:
+                    cand_map = {c.unit.uid: c for c in candidates}
+                    for u, target, flags, status in unit_updates:
+                        c_cand = cand_map.get(u.uid)
+                        c_calque = (
+                            calque_scores.get(u.uid, 0.0) if "calque_scores" in locals() else 0.0
+                        )
+                        tgt_tag = c_cand.target_tag if c_cand else None
+                        is_refl = bool(
+                            "refined_drafts" in locals()
+                            and u.uid in refined_drafts
+                            and refined_drafts[u.uid] == target
+                        )
+                        self.unit_cb(
+                            LiveDialogueItem(
+                                uid=u.uid,
+                                seq=u.seq,
+                                speaker=u.speaker or "",
+                                listener=tgt_tag,
+                                source=u.source,
+                                target=target,
+                                status=status.value if hasattr(status, "value") else str(status),
+                                origin="reflected" if is_refl else Origin.LLM.value,
+                                calque_score=c_calque,
+                                qa_issues=flags,
+                                updated_at=utc_timestamp(),
+                            )
+                        )
 
         if not failed_units:
             return []
